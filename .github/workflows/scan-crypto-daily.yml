@@ -1,0 +1,19 @@
+name: Crypto daily scan
+
+# Runs every day at 00:30 UTC (just after the daily crypto candle closes).
+# Also runnable by hand from the Actions tab.
+on:
+  schedule:
+    - cron: "30 0 * * *"
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python scan_crypto.py
