@@ -1,0 +1,5 @@
+charts/
+.monthly_state.txt
+__pycache__/
+*.pyc
+WhatsApp*.jpeg
