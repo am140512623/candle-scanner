@@ -36,7 +36,16 @@ CHART_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "charts")
 # Read from environment (used by the cloud / GitHub Actions secrets) if present,
 # otherwise fall back to these local values.
 BOT_TOKEN = os.environ.get("BOT_TOKEN") or "8853901166:AAFXsym_oE-8rzDN6pEKBS5hT8lh9_hnAWM"
-CHAT_ID = os.environ.get("CHAT_ID") or "7788611624"
+
+# One or more Telegram recipients. Add more by appending their chat IDs.
+# (Each person must tap Start on the bot once before they can receive messages.)
+CHAT_IDS = [
+    "7788611624",   # A
+    "6173185769",   # m
+]
+# Allow the cloud secret CHAT_ID to override (comma-separated list supported).
+if os.environ.get("CHAT_ID"):
+    CHAT_IDS = [c.strip() for c in os.environ["CHAT_ID"].split(",") if c.strip()]
 
 # --- Email results (optional) ---
 # To turn on: set EMAIL_ENABLED = True and fill in the 3 lines below.
@@ -193,19 +202,20 @@ def chart_links(kind, ticker):
 
 
 def _telegram_ready():
-    return "YOUR_" not in BOT_TOKEN and "YOUR_" not in CHAT_ID
+    return "YOUR_" not in BOT_TOKEN and bool(CHAT_IDS)
 
 
 def send_telegram_alert(message):
     if not _telegram_ready():
         return  # not configured yet
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    try:
-        r = requests.post(url, json={"chat_id": CHAT_ID, "text": message}, timeout=15)
-        if not r.ok:
-            print(f"  Telegram error {r.status_code}: {r.text}")
-    except Exception as e:
-        print(f"  Error sending message: {e}")
+    for chat_id in CHAT_IDS:
+        try:
+            r = requests.post(url, json={"chat_id": chat_id, "text": message}, timeout=15)
+            if not r.ok:
+                print(f"  Telegram error to {chat_id}: {r.status_code} {r.text}")
+        except Exception as e:
+            print(f"  Error sending message to {chat_id}: {e}")
 
 
 def send_email_report(subject, body, attachments):
@@ -239,14 +249,15 @@ def send_telegram_photo(image_path, caption):
     if not _telegram_ready():
         return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-    try:
-        with open(image_path, "rb") as f:
-            r = requests.post(url, data={"chat_id": CHAT_ID, "caption": caption},
-                              files={"photo": f}, timeout=30)
-        if not r.ok:
-            print(f"  Telegram photo error {r.status_code}: {r.text}")
-    except Exception as e:
-        print(f"  Error sending photo: {e}")
+    for chat_id in CHAT_IDS:
+        try:
+            with open(image_path, "rb") as f:
+                r = requests.post(url, data={"chat_id": chat_id, "caption": caption},
+                                  files={"photo": f}, timeout=30)
+            if not r.ok:
+                print(f"  Telegram photo error to {chat_id}: {r.status_code} {r.text}")
+        except Exception as e:
+            print(f"  Error sending photo to {chat_id}: {e}")
 
 
 # ---------------------------------------------------------------------------
