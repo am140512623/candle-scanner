@@ -1,10 +1,10 @@
-name: Crypto daily scan
+name: Crypto multi-timeframe scan
 
-# Runs every day at 00:30 UTC (just after the daily crypto candle closes).
-# Also runnable by hand from the Actions tab.
+# Runs every 6 hours so the intraday frames (6h/8h/12h) are scanned near their
+# closes; daily/2d/3d are covered too. Also runnable by hand from the Actions tab.
 on:
   schedule:
-    - cron: "30 0 * * *"
+    - cron: "5 */6 * * *"
   workflow_dispatch:
 
 jobs:
