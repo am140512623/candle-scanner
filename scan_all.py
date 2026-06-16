@@ -184,6 +184,38 @@ def get_top_crypto(n=200):
     return tickers
 
 
+def get_us_stocks_with_caps():
+    """Every US-listed stock with a market cap, from the free Nasdaq screener.
+
+    One HTTP call, no API key. Returns a list of (yahoo_symbol, market_cap_usd)
+    sorted biggest-cap first. Used by the segmented cap-tier bots to slice the
+    market into Mega / Large / Mid / Small buckets.
+    """
+    headers = {"User-Agent": "Mozilla/5.0 (scanner)", "Accept": "application/json"}
+    resp = requests.get(
+        "https://api.nasdaq.com/api/screener/stocks",
+        params={"tableonly": "true", "limit": "10000", "download": "true"},
+        headers=headers, timeout=30,
+    )
+    resp.raise_for_status()
+    rows = (resp.json().get("data") or {}).get("rows") or []
+    out = {}
+    for r in rows:
+        sym = (r.get("symbol") or "").strip().upper()
+        if not sym or "^" in sym:
+            continue
+        try:
+            cap = float((r.get("marketCap") or "").strip())
+        except ValueError:
+            continue
+        if cap <= 0:
+            continue
+        # Nasdaq uses '/' or '.' for share classes; Yahoo uses '-' (BRK/B -> BRK-B).
+        yahoo = sym.replace("/", "-").replace(".", "-")
+        out[yahoo] = cap   # dedupe; last write wins
+    return sorted(out.items(), key=lambda kv: kv[1], reverse=True)
+
+
 def chunked(seq, size):
     for i in range(0, len(seq), size):
         yield seq[i:i + size]
