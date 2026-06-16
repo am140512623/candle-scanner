@@ -13,9 +13,10 @@ SEGMENT environment variable. All of these scan the WEEKLY (and MONTHLY) candle:
 (Crypto rank 1-300 on the intraday 6h..4d frames is handled separately by bot #2,
 scan_crypto.py.)
 
-Alerts reuse your TWO existing Telegram bots automatically -- crypto segments go to
-the crypto bot, stock segments to the sp500/nasdaq bot. SEG_TOKEN / SEG_CHAT can
-override per run if you ever want a different destination.
+Each segment has its OWN Telegram bot. The workflow passes that bot's token in as
+SEG_TOKEN (from a GitHub secret); alerts go to the recipients in DEFAULT_CHATS
+(override per run with SEG_CHAT). Every recipient must tap Start on a bot once
+before Telegram will let it message them.
 
 Run one locally (PowerShell):
     $env:SEGMENT="stock_mid"; python scan_segment.py
@@ -24,14 +25,13 @@ Run one locally (PowerShell):
 import os
 
 import scan_all as s
-# scan_all's own bot is your sp500/nasdaq (stock) bot -- capture it BEFORE the
-# scan_crypto import below repoints the shared token at the crypto bot.
-STOCK_BOT = (s.BOT_TOKEN, list(s.CHAT_IDS))
-import scan_crypto as c  # noqa: E402  (its import sets the shared token to the crypto bot)
-CRYPTO_BOT = (s.BOT_TOKEN, list(s.CHAT_IDS))
 
 B = 1_000_000_000   # billion
 M = 1_000_000       # million
+
+# Who receives the alerts (Telegram numeric user IDs). Same people as the other
+# bots; each must press Start on every bot once. Not secret, so kept in code.
+DEFAULT_CHATS = ["7788611624", "6173185769"]
 
 # Each segment = which slice of the market + a human label.
 #   crypto -> "rank": (low, high) market-cap rank, inclusive low / exclusive high
@@ -45,14 +45,17 @@ SEGMENTS = {
 }
 
 
-def configure_telegram(seg):
-    """Point scan_all's Telegram sender at the right bot for this segment."""
-    token, chats = CRYPTO_BOT if seg["asset"] == "crypto" else STOCK_BOT
+def configure_telegram():
+    """Point scan_all's Telegram sender at THIS segment's bot.
+
+    SEG_TOKEN (the segment's own bot token, injected from a GitHub secret) is
+    required in the cloud; if it's missing locally we leave scan_all's default
+    token in place so a manual test still runs.
+    """
     if os.environ.get("SEG_TOKEN"):
-        token = os.environ["SEG_TOKEN"]
-    if os.environ.get("SEG_CHAT"):
-        chats = [x.strip() for x in os.environ["SEG_CHAT"].split(",") if x.strip()]
-    s.BOT_TOKEN, s.CHAT_IDS = token, chats
+        s.BOT_TOKEN = os.environ["SEG_TOKEN"]
+    chat = os.environ.get("SEG_CHAT")
+    s.CHAT_IDS = [x.strip() for x in chat.split(",") if x.strip()] if chat else list(DEFAULT_CHATS)
 
 
 def timeframes_for(asset):
@@ -122,7 +125,7 @@ def main():
     if key not in SEGMENTS:
         raise SystemExit(f"Set SEGMENT to one of: {', '.join(SEGMENTS)}  (got {key!r})")
     seg = SEGMENTS[key]
-    configure_telegram(seg)
+    configure_telegram()
     kind = "CRYPTO" if seg["asset"] == "crypto" else "STOCK"
     print(f"=== Segment: {seg['label']} ({key}) ===")
 

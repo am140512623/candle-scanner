@@ -22,3 +22,4 @@ jobs:
         env:
           SEGMENT: stock_mega
           SCAN_MODE: ${{ github.event.schedule == '0 6 1 * *' && 'monthly' || 'weekly' }}
+          SEG_TOKEN: ${{ secrets.STOCK_MEGA_BOT_TOKEN }}

@@ -22,3 +22,4 @@ jobs:
         env:
           SEGMENT: crypto_top1000
           SCAN_MODE: ${{ github.event.schedule == '20 0 1 * *' && 'monthly' || 'weekly' }}
+          SEG_TOKEN: ${{ secrets.CRYPTO_TOP1000_BOT_TOKEN }}
