@@ -120,7 +120,9 @@ def check_pattern(df):
     body_two = c2_close - c2_open
     upper_tail_two = c2_high - c2_close
     strong_close = body_two > upper_tail_two
-    engulfs_body = c2_close > c1_close and c2_open <= c1_close
+    # Candle 2 must close above candle 1's close. The open-gap is ignored
+    # (a few dollars above/below candle 1's close no longer disqualifies it).
+    engulfs_body = c2_close > c1_close
 
     bottom_swallow = c2_low < c1_low
 
