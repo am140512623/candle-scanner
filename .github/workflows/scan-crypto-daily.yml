@@ -1,10 +1,18 @@
 name: Crypto multi-timeframe scan
 
-# Runs every 6 hours so the intraday frames (6h/8h/12h) are scanned near their
-# closes; daily/2d/3d are covered too. Also runnable by hand from the Actions tab.
+# Bot #2 -- top 300 crypto. Each schedule fires ~2 min after a candle closes and
+# scans ONLY the timeframe(s) that just closed, so alerts land on the close with
+# no repeats. (GitHub's scheduler can run a few minutes late.)
+#   00:00 UTC -> 6H,8H,12H,1D (+2D/3D/4D on their close days)
+#   06:00 -> 6H | 08:00 -> 8H | 12:00 -> 6H,12H | 16:00 -> 8H | 18:00 -> 6H
 on:
   schedule:
-    - cron: "5 */6 * * *"
+    - cron: "4 0 * * *"
+    - cron: "4 6 * * *"
+    - cron: "4 8 * * *"
+    - cron: "4 12 * * *"
+    - cron: "4 16 * * *"
+    - cron: "4 18 * * *"
   workflow_dispatch:
 
 jobs:
@@ -17,3 +25,11 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt
       - run: python scan_crypto.py
+        env:
+          CRYPTO_FRAMES: >-
+            ${{ github.event.schedule == '4 6 * * *' && '6H'
+            || github.event.schedule == '4 8 * * *' && '8H'
+            || github.event.schedule == '4 12 * * *' && '6H,12H'
+            || github.event.schedule == '4 16 * * *' && '8H'
+            || github.event.schedule == '4 18 * * *' && '6H'
+            || '6H,8H,12H,1D,2D,3D,4D' }}

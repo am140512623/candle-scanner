@@ -1,0 +1,24 @@
+name: Bot - Crypto rank 300-1000 (weekly)
+
+# Crypto market-cap rank 300-1000, scanned on the WEEKLY (and MONTHLY) candle.
+# Crypto's week rolls over Monday 00:00 UTC, so weekly fires Monday; monthly
+# fires on the 1st. Alerts go to your existing crypto Telegram bot.
+on:
+  schedule:
+    - cron: "20 0 * * 1"   # weekly  (Monday 00:20 UTC, just after the weekly candle closes)
+    - cron: "20 0 1 * *"   # monthly (1st of month 00:20 UTC)
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python scan_segment.py
+        env:
+          SEGMENT: crypto_top1000
+          SCAN_MODE: ${{ github.event.schedule == '20 0 1 * *' && 'monthly' || 'weekly' }}

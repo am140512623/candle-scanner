@@ -1,0 +1,24 @@
+name: Bot - Large-Cap Stocks
+
+# US stocks $10B - $200B. Fires right after a candle CLOSES:
+#   weekly  -> Saturday (the Mon-Fri weekly candle is finalized)
+#   monthly -> 1st of the month (the previous month's candle is finalized)
+on:
+  schedule:
+    - cron: "5 6 * * 6"   # weekly  (Saturday 06:05 UTC)
+    - cron: "5 6 1 * *"   # monthly (1st of month 06:05 UTC)
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python scan_segment.py
+        env:
+          SEGMENT: stock_large
+          SCAN_MODE: ${{ github.event.schedule == '5 6 1 * *' && 'monthly' || 'weekly' }}
