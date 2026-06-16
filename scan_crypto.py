@@ -26,7 +26,7 @@ s.CHAT_IDS = [
 if os.environ.get("CRYPTO_CHAT_ID"):
     s.CHAT_IDS = [c.strip() for c in os.environ["CRYPTO_CHAT_ID"].split(",") if c.strip()]
 
-CRYPTO_TOP_N = 200
+CRYPTO_TOP_N = 300
 
 # Each timeframe: which base candles to pull, and how to merge them.
 # rule=None means use the base candles as-is.
