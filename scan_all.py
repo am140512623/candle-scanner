@@ -154,7 +154,67 @@ def get_nasdaq100():
     return []
 
 
+# Stablecoins are useless for this pattern, so they're dropped from the universe.
+STABLECOINS = {"USDT", "USDC", "DAI", "BUSD", "TUSD", "USDE", "FDUSD", "USDS", "PYUSD"}
+# Browser-like UA: Yahoo's screener endpoint rejects the plain scanner UA.
+_BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+
+
 def get_top_crypto(n=200):
+    """Top n crypto tickers by market cap, stablecoins dropped, in rank order.
+
+    Pulls the list straight from Yahoo's own crypto screener, so every ticker is
+    guaranteed to have Yahoo candle data (no CoinGecko->Yahoo symbol mismatches,
+    which used to skip ~half of the lower-ranked coins). Falls back to CoinGecko
+    if Yahoo's screener is ever unavailable.
+    """
+    try:
+        quotes = _yahoo_crypto_quotes(n)
+        seen, tickers = set(), []
+        for q in quotes[:n]:
+            sym = (q.get("symbol") or "").upper()        # already 'BTC-USD'
+            if not sym or sym in seen or sym.replace("-USD", "") in STABLECOINS:
+                continue
+            seen.add(sym)
+            tickers.append(sym)
+        if tickers:
+            return tickers
+        print("  Yahoo crypto screener returned nothing; falling back to CoinGecko")
+    except Exception as e:
+        print(f"  Yahoo crypto screener failed ({e}); falling back to CoinGecko")
+    return _coingecko_top_crypto(n)
+
+
+def _yahoo_crypto_quotes(n):
+    """Fetch up to n crypto quotes (symbol + market cap) from Yahoo, cap-sorted."""
+    session = requests.Session()
+    session.headers.update({"User-Agent": _BROWSER_UA})
+    try:
+        session.get("https://finance.yahoo.com", timeout=15)  # prime cookies
+    except requests.RequestException:
+        pass
+    out, start = [], 0
+    while len(out) < n:
+        r = session.get(
+            "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved",
+            params={"scrIds": "all_cryptocurrencies_us", "count": 250, "start": start},
+            timeout=30,
+        )
+        r.raise_for_status()
+        result = r.json()["finance"]["result"][0]
+        quotes = result.get("quotes", [])
+        if not quotes:
+            break
+        out.extend(quotes)
+        start += 250
+        if start >= result.get("total", 0):
+            break
+        time.sleep(0.3)
+    return out
+
+
+def _coingecko_top_crypto(n):
+    """Fallback: top n crypto from CoinGecko, mapped to Yahoo SYMBOL-USD tickers."""
     out = []
     per_page = 250
     page = 1
@@ -172,12 +232,10 @@ def get_top_crypto(n=200):
         out.extend(rows)
         page += 1
         time.sleep(1)  # be polite to the free API
-    # Yahoo uses SYMBOL-USD (e.g. BTC-USD). Stablecoins are useless for this pattern.
-    stable = {"USDT", "USDC", "DAI", "BUSD", "TUSD", "USDE", "FDUSD", "USDS", "PYUSD"}
     seen, tickers = set(), []
     for c in out[:n]:
         sym = c["symbol"].upper()
-        if sym in stable or sym in seen:
+        if sym in STABLECOINS or sym in seen:
             continue
         seen.add(sym)
         tickers.append(f"{sym}-USD")
