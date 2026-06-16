@@ -1,0 +1,25 @@
+name: Bot - Crypto Top 300 (weekly)
+
+# Top 300 crypto, scanned on the WEEKLY (and MONTHLY) candle -- separate from the
+# intraday Top 300 bot. Crypto's week rolls over Monday 00:00 UTC, so weekly fires
+# Monday; monthly fires on the 1st. Alerts go to its own Telegram bot.
+on:
+  schedule:
+    - cron: "25 0 * * 1"   # weekly  (Monday 00:25 UTC, just after the weekly candle closes)
+    - cron: "25 0 1 * *"   # monthly (1st of month 00:25 UTC)
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python scan_segment.py
+        env:
+          SEGMENT: crypto_top300_weekly
+          SCAN_MODE: ${{ github.event.schedule == '25 0 1 * *' && 'monthly' || 'weekly' }}
+          SEG_TOKEN: ${{ secrets.CRYPTO_TOP300_WEEKLY_BOT_TOKEN }}
