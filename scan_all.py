@@ -35,7 +35,7 @@ CHART_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "charts")
 # ---------------------------------------------------------------------------
 # Read from environment (used by the cloud / GitHub Actions secrets) if present,
 # otherwise fall back to these local values.
-BOT_TOKEN = os.environ.get("BOT_TOKEN") or "8853901166:AAFXsym_oE-8rzDN6pEKBS5hT8lh9_hnAWM"
+BOT_TOKEN = os.environ.get("BOT_TOKEN") or "YOUR_BOT_TOKEN"
 
 # One or more Telegram recipients. Add more by appending their chat IDs.
 # (Each person must tap Start on the bot once before they can receive messages.)
