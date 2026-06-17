@@ -1,5 +1,5 @@
 """
-Bot #2 -- multi-timeframe crypto scanner.
+Bot #2 -- intraday multi-timeframe crypto scanner.
 
 Scans the top 300 crypto for the same Liquidity Grab pattern on EVERY clean
 timeframe that is bigger than 4 hours and smaller than 1 week:
@@ -8,7 +8,11 @@ timeframe that is bigger than 4 hours and smaller than 1 week:
 
 Yahoo only serves 1h and 1d candles natively, so the 6h/8h/12h frames are built
 from hourly data and the 2d/3d/4d frames from daily data (crypto trades 24/7, so
-these merge cleanly). Alerts go to a SEPARATE Telegram bot.
+these merge cleanly). Alerts go to a SEPARATE Telegram bot (CRYPTO_BOT_TOKEN).
+
+The weekly (1W) and monthly (1M) frames are a DIFFERENT bot entirely -- see
+scan_crypto_wm.py, which reuses this module's engine (resample / freshness /
+WM_FRAMES) but sends to its own bot. The two never mix.
 """
 
 import datetime
@@ -18,7 +22,10 @@ import pandas as pd
 
 import scan_all as s
 
-# --- Separate bot for these crypto alerts ---
+# --- Separate bot for these (intraday) crypto alerts ---
+# This script's main() is the INTRADAY bot: 6H..4D frames only -> CRYPTO_BOT_TOKEN.
+# The weekly/monthly frames (1W, 1M) are a SEPARATE bot handled by scan_crypto_wm.py,
+# which reuses this module's engine with its own token. The two never mix.
 s.BOT_TOKEN = os.environ.get("CRYPTO_BOT_TOKEN") or "YOUR_CRYPTO_BOT_TOKEN"
 s.CHAT_IDS = [
     "7788611624",   # A
@@ -29,31 +36,50 @@ if os.environ.get("CRYPTO_CHAT_ID"):
 
 CRYPTO_TOP_N = 300
 
-# Each timeframe: which base candles to pull, and how to merge them.
-# rule=None means use the base candles as-is.
-TIMEFRAMES = [
-    {"label": "6H",  "base": "1h", "rule": "6h"},
-    {"label": "8H",  "base": "1h", "rule": "8h"},
-    {"label": "12H", "base": "1h", "rule": "12h"},
-    {"label": "1D",  "base": "1d", "rule": None},
-    {"label": "2D",  "base": "1d", "rule": "2D"},
-    {"label": "3D",  "base": "1d", "rule": "3D"},
-    {"label": "4D",  "base": "1d", "rule": "4D"},
-]
-
-# How much history to pull for each base candle size.
-BASE_PERIODS = {"1h": "60d", "1d": "1y"}
-
 # Origin used when merging daily candles into 2D/3D/4D. A fixed epoch makes the
 # candle boundaries deterministic, so we can tell -- by the calendar alone --
 # exactly which day each one closes on (see closes_today).
 RESAMPLE_ORIGIN = "epoch"
 _EPOCH = datetime.date(1970, 1, 1)
-# Multi-day frames close every Nth day; the rest close every day.
+
+# Each timeframe: which base candles to pull, and how to merge them. "rkw" is the
+# keyword args passed straight to df.resample(); rkw=None means use the base
+# candles as-is. The Nd frames merge from a fixed epoch (deterministic day
+# boundaries); the weekly frame uses Monday-anchored, left-labelled weeks so each
+# bar is stamped at its own Monday start; the monthly frame uses month-start (MS)
+# bars stamped at the 1st -- both keeping the "bar labelled at its start"
+# convention the freshness logic below relies on.
+#
+# Two DISJOINT groups, each driven by its own bot/script (they never mix):
+#   INTRADAY_FRAMES -> scan_crypto.py     (this file)        -> CRYPTO_BOT_TOKEN
+#   WM_FRAMES       -> scan_crypto_wm.py  (weekly + monthly) -> CRYPTO_WM_BOT_TOKEN
+INTRADAY_FRAMES = [
+    {"label": "6H",  "base": "1h", "rkw": {"rule": "6h",  "origin": RESAMPLE_ORIGIN}},
+    {"label": "8H",  "base": "1h", "rkw": {"rule": "8h",  "origin": RESAMPLE_ORIGIN}},
+    {"label": "12H", "base": "1h", "rkw": {"rule": "12h", "origin": RESAMPLE_ORIGIN}},
+    {"label": "1D",  "base": "1d", "rkw": None},
+    {"label": "2D",  "base": "1d", "rkw": {"rule": "2D", "origin": RESAMPLE_ORIGIN}},
+    {"label": "3D",  "base": "1d", "rkw": {"rule": "3D", "origin": RESAMPLE_ORIGIN}},
+    {"label": "4D",  "base": "1d", "rkw": {"rule": "4D", "origin": RESAMPLE_ORIGIN}},
+]
+WM_FRAMES = [
+    {"label": "1W",  "base": "1d", "rkw": {"rule": "W-MON", "label": "left", "closed": "left"}},
+    {"label": "1M",  "base": "1d", "rkw": {"rule": "MS",    "label": "left", "closed": "left"}},
+]
+# Full catalog -- used only by the per-label helpers (closes_today, durations).
+TIMEFRAMES = INTRADAY_FRAMES + WM_FRAMES
+
+# How much history to pull for each base candle size. The daily pull needs to be
+# long enough to leave plenty of monthly bars after resampling (2y -> ~24 months).
+BASE_PERIODS = {"1h": "60d", "1d": "2y"}
+
+# Multi-day frames close every Nth day; 6H/8H/12H/1D close every day. Weekly and
+# monthly are calendar-based and handled specially in closes_today.
 _MULTIDAY = {"2D": 2, "3D": 3, "4D": 4}
 
 # How long each frame's candle lasts. Used to turn a candle's start timestamp
-# into the wall-clock moment it actually closed (start + duration).
+# into the wall-clock moment it actually closed (start + duration). 1M is NOT
+# here -- months vary in length, so its close is derived from the calendar.
 FRAME_DURATION = {
     "6H":  datetime.timedelta(hours=6),
     "8H":  datetime.timedelta(hours=8),
@@ -62,6 +88,7 @@ FRAME_DURATION = {
     "2D":  datetime.timedelta(days=2),
     "3D":  datetime.timedelta(days=3),
     "4D":  datetime.timedelta(days=4),
+    "1W":  datetime.timedelta(days=7),
 }
 
 # Freshness gate. These bots are stateless, so a candle could be alerted twice if
@@ -74,14 +101,15 @@ FRESHNESS_WINDOW = datetime.timedelta(
     minutes=int(os.environ.get("CRYPTO_FRESHNESS_MIN", "30")))
 
 
-def selected_frames():
-    """Which timeframes to scan this run. CRYPTO_FRAMES (e.g. '6H,12H') lets a
-    workflow scan only the frame(s) that just closed; unset = scan them all."""
+def selected_frames(catalog):
+    """Which timeframes to scan this run, chosen from `catalog` (this bot's own
+    frame group). CRYPTO_FRAMES (e.g. '6H,12H') lets a workflow scan only the
+    frame(s) that just closed; unset = scan all of the bot's frames."""
     raw = os.environ.get("CRYPTO_FRAMES")
     if not raw:
-        return TIMEFRAMES
+        return list(catalog)
     want = {x.strip().upper() for x in raw.split(",") if x.strip()}
-    return [tf for tf in TIMEFRAMES if tf["label"] in want]
+    return [tf for tf in catalog if tf["label"] in want]
 
 
 def closes_today(label):
@@ -90,10 +118,16 @@ def closes_today(label):
     6H/8H/12H/1D close every day, so they're always 'today'. 2D/3D/4D only close
     every 2nd/3rd/4th day -- counted from the same fixed epoch the resampler uses
     -- which is how we avoid re-alerting the same multi-day candle on its off-days.
+    1W closes only on Mondays (Mon-Sun weeks) and 1M only on the 1st of the month,
+    so on every other day they self-skip and the just-closed candle isn't re-scanned.
     """
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    if label == "1W":
+        return today.weekday() == 0      # Monday
+    if label == "1M":
+        return today.day == 1
     if label not in _MULTIDAY:
         return True
-    today = datetime.datetime.now(datetime.timezone.utc).date()
     days = (today - _EPOCH).days
     return days % _MULTIDAY[label] == 0
 
@@ -107,6 +141,10 @@ def candle_closed_at(label, candle_start):
     """
     ts = pd.Timestamp(candle_start)
     ts = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+    if label == "1M":
+        # Months vary in length, so derive the close from the calendar, not a
+        # fixed duration: a month bar labelled at its 1st closes on the next 1st.
+        return (ts + pd.offsets.MonthBegin(1)).to_pydatetime()
     return ts.to_pydatetime() + FRAME_DURATION[label]
 
 
@@ -139,21 +177,25 @@ def download_base(tickers, interval, period):
     return out
 
 
-def resample_ohlc(df, rule):
-    """Merge candles into a bigger timeframe (e.g. 1h -> 6h)."""
-    agg = df.resample(rule, origin=RESAMPLE_ORIGIN).agg(
+def resample_ohlc(df, rkw):
+    """Merge candles into a bigger timeframe (e.g. 1h -> 6h). rkw is passed
+    straight to df.resample() (rule + anchoring), so each frame controls its own
+    bin boundaries and labelling."""
+    agg = df.resample(**rkw).agg(
         {"Open": "first", "High": "max", "Low": "min", "Close": "last"})
     return agg.dropna()
 
 
-def run(crypto):
-    """Scan a given list of crypto tickers across the selected timeframes.
-    Returns the match count. Reused by the segmented rank bots (scan_segment.py).
+def run(crypto, catalog=INTRADAY_FRAMES):
+    """Scan a list of crypto tickers across the selected timeframes, sending each
+    match via whatever bot token is currently set on scan_all (s.BOT_TOKEN).
+    Returns the match count.
 
-    Which timeframes run is controlled by CRYPTO_FRAMES so a workflow can scan
-    ONLY the frame that just closed -- giving near-on-close alerts with no repeats.
+    `catalog` is this bot's frame group (INTRADAY_FRAMES or WM_FRAMES). Which of
+    those actually run is further controlled by CRYPTO_FRAMES, so a workflow can
+    scan ONLY the frame that just closed -- near-on-close alerts with no repeats.
     """
-    frames = selected_frames()
+    frames = selected_frames(catalog)
     # 2D/3D only "close" some days; skip them entirely on their off-days.
     frames = [tf for tf in frames if closes_today(tf["label"])]
     if not frames:
@@ -175,7 +217,7 @@ def run(crypto):
         matches, stale = [], 0
         for t, df in base_data.items():
             try:
-                d = resample_ohlc(df, tf["rule"]) if tf["rule"] else df
+                d = resample_ohlc(df, tf["rkw"]) if tf["rkw"] else df
                 d = d.iloc[:-1]          # drop the still-forming candle
                 if len(d) < 2:
                     continue
@@ -210,7 +252,7 @@ def run(crypto):
 
 
 def main():
-    # Token now comes from the CRYPTO_BOT_TOKEN secret (no hardcoded fallback).
+    # Token comes from the CRYPTO_BOT_TOKEN secret (no hardcoded fallback).
     # Log readiness -- never the token itself -- so a run shows at a glance
     # whether alerts will actually send.
     print("Telegram: " + ("configured" if s._telegram_ready()
@@ -218,7 +260,7 @@ def main():
     print("Building crypto universe...")
     crypto = s.get_top_crypto(CRYPTO_TOP_N)
     print(f"  Crypto: {len(crypto)} from top {CRYPTO_TOP_N} (stablecoins dropped)")
-    run(crypto)
+    run(crypto, INTRADAY_FRAMES)
 
 
 if __name__ == "__main__":

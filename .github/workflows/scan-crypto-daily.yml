@@ -1,6 +1,7 @@
 name: Crypto multi-timeframe scan
 
 # Bot #2 -- top 300 crypto, intraday 6H..4D frames.
+# (Weekly/monthly for the same top 300 is a SEPARATE bot: scan-crypto-wm.yml.)
 #
 # WHY NO `schedule:` HERE: GitHub's own cron scheduler fires late and bunched --
 # often hours after a candle closes -- which produced late alerts and duplicates.

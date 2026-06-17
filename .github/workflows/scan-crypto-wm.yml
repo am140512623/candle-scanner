@@ -1,0 +1,54 @@
+name: Crypto weekly + monthly scan
+
+# Bot #3 -- top 300 crypto, WEEKLY (1W) and MONTHLY (1M) frames only.
+# Sends to its OWN Telegram bot (@topcrypto300wmbot) via the CRYPTO_WM_BOT_TOKEN
+# secret. Separate from the intraday 6H..4D bot (scan-crypto-daily.yml) -- the
+# two share no frames and no token.
+#
+# Unlike the intraday bot, this one uses GitHub's OWN scheduler -- no external
+# cron-job.org needed. GitHub cron can fire late/bunched, but that's harmless for
+# weekly/monthly: the next candle of the same frame is a week/month away, so a
+# late run can't collide with anything. We just widen the freshness window
+# (CRYPTO_FRESHNESS_MIN below) so a late run still counts the just-closed candle.
+#
+# ONE daily schedule at 00:00 UTC. Every day it scans both 1W & 1M, and
+# closes_today() self-skips whichever didn't actually close: 1W fires only on
+# Mondays, 1M only on the 1st. On off-days run() returns immediately WITHOUT
+# downloading anything (the frame filter runs before any network call), so the
+# daily run is essentially free except on the ~5 days a month something closes.
+#
+# Why ONE daily cron and not separate Monday + 1st crons: when the 1st falls on a
+# Monday both would fire as two runs, and the freshness gate is stateless across
+# runs -> duplicate alerts. A single daily run scans both frames exactly once, so
+# even a Monday-the-1st can't double-fire.
+#
+# workflow_dispatch is kept so you can also run it by hand from the Actions tab.
+# YOU DON'T NEED TO SET UP ANYTHING EXTERNALLY -- this schedule runs on its own
+# once this file is on the default branch (main).
+# ------------------------------------------------------------------------------
+on:
+  schedule:
+    - cron: "0 0 * * *"   # daily 00:00 UTC; 1W self-fires Mondays, 1M on the 1st
+  workflow_dispatch:
+    inputs:
+      frames:
+        description: "Frames to scan: 1W, 1M, or 1W,1M. Empty = both."
+        required: false
+        default: ""
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python scan_crypto_wm.py
+        env:
+          CRYPTO_FRAMES: ${{ inputs.frames }}
+          CRYPTO_WM_BOT_TOKEN: ${{ secrets.CRYPTO_WM_BOT_TOKEN }}
+          # Wide window: absorbs GitHub's scheduler lateness yet stays well under
+          # a day, so the same weekly/monthly candle is never alerted twice.
+          CRYPTO_FRESHNESS_MIN: "720"
