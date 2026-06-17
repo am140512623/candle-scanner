@@ -52,6 +52,27 @@ _EPOCH = datetime.date(1970, 1, 1)
 # Multi-day frames close every Nth day; the rest close every day.
 _MULTIDAY = {"2D": 2, "3D": 3, "4D": 4}
 
+# How long each frame's candle lasts. Used to turn a candle's start timestamp
+# into the wall-clock moment it actually closed (start + duration).
+FRAME_DURATION = {
+    "6H":  datetime.timedelta(hours=6),
+    "8H":  datetime.timedelta(hours=8),
+    "12H": datetime.timedelta(hours=12),
+    "1D":  datetime.timedelta(days=1),
+    "2D":  datetime.timedelta(days=2),
+    "3D":  datetime.timedelta(days=3),
+    "4D":  datetime.timedelta(days=4),
+}
+
+# Freshness gate. These bots are stateless, so a candle could be alerted twice if
+# a trigger double-fires, fires late, or is replayed. We only alert a candle in
+# the brief window right after it closes; anything that closed more than
+# CRYPTO_FRESHNESS_MIN minutes ago is treated as already-handled and stays
+# silent. (The download+scan of 300 coins takes a couple minutes, so the window
+# must comfortably exceed normal run latency -- 30 min is a safe default.)
+FRESHNESS_WINDOW = datetime.timedelta(
+    minutes=int(os.environ.get("CRYPTO_FRESHNESS_MIN", "30")))
+
 
 def selected_frames():
     """Which timeframes to scan this run. CRYPTO_FRAMES (e.g. '6H,12H') lets a
@@ -75,6 +96,29 @@ def closes_today(label):
     today = datetime.datetime.now(datetime.timezone.utc).date()
     days = (today - _EPOCH).days
     return days % _MULTIDAY[label] == 0
+
+
+def candle_closed_at(label, candle_start):
+    """UTC datetime when a `label` candle whose bar starts at candle_start closed.
+
+    Yahoo/pandas label each bar by its left edge (its start), so the close is just
+    start + the frame's duration. Daily bars come back tz-naive (UTC midnight) and
+    hourly bars tz-aware -- normalise both to UTC.
+    """
+    ts = pd.Timestamp(candle_start)
+    ts = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+    return ts.to_pydatetime() + FRAME_DURATION[label]
+
+
+def is_fresh(label, candle_start, now=None):
+    """True only if this candle closed within the freshness window (i.e. just now).
+
+    Blocks re-alerts: a candle that closed more than FRESHNESS_WINDOW ago is
+    stale, so a late / bunched / replayed run won't fire on it a second time.
+    """
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    age = now - candle_closed_at(label, candle_start)
+    return datetime.timedelta(0) <= age <= FRESHNESS_WINDOW
 
 
 def download_base(tickers, interval, period):
@@ -128,18 +172,24 @@ def run(crypto):
     total = 0
     for tf in frames:
         base_data = bases[tf["base"]]
-        matches = []
+        matches, stale = [], 0
         for t, df in base_data.items():
             try:
                 d = resample_ohlc(df, tf["rule"]) if tf["rule"] else df
                 d = d.iloc[:-1]          # drop the still-forming candle
                 if len(d) < 2:
                     continue
+                # Freshness gate: only the candle that JUST closed is eligible.
+                # Skips stale candles so a late/duplicate run can't re-alert them.
+                if not is_fresh(tf["label"], d.index[-1]):
+                    stale += 1
+                    continue
                 if s.check_pattern(d):
                     matches.append((t, d))
             except Exception:
                 continue
-        print(f"\n[{tf['label']}] {len(matches)} match(es) from {len(base_data)} coins")
+        print(f"\n[{tf['label']}] {len(matches)} match(es) from {len(base_data)} coins"
+              + (f" ({stale} skipped: candle not fresh)" if stale else ""))
         for t, d in matches:
             total += 1
             yahoo, tv = s.chart_links("CRYPTO", t)
