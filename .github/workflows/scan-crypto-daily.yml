@@ -1,19 +1,40 @@
 name: Crypto multi-timeframe scan
 
-# Bot #2 -- top 300 crypto. Each schedule fires ~2 min after a candle closes and
-# scans ONLY the timeframe(s) that just closed, so alerts land on the close with
-# no repeats. (GitHub's scheduler can run a few minutes late.)
-#   00:00 UTC -> 6H,8H,12H,1D (+2D/3D/4D on their close days)
-#   06:00 -> 6H | 08:00 -> 8H | 12:00 -> 6H,12H | 16:00 -> 8H | 18:00 -> 6H
+# Bot #2 -- top 300 crypto, intraday 6H..4D frames.
+#
+# WHY NO `schedule:` HERE: GitHub's own cron scheduler fires late and bunched --
+# often hours after a candle closes -- which produced late alerts and duplicates.
+# This bot is instead triggered EXTERNALLY by a punctual scheduler (cron-job.org)
+# that POSTs to the workflow_dispatch API right when each candle closes. The
+# `frames` input tells the run which timeframe(s) just closed; empty = scan all.
+#
+# Re-alert safety net: scan_crypto.py also applies a freshness gate, so even if a
+# trigger double-fires or arrives late, a candle that closed more than a few
+# minutes ago is never alerted twice. (Tune with the CRYPTO_FRESHNESS_MIN env.)
+#
+# --- cron-job.org setup (one job per close time below; all times UTC) ---------
+# For each job:
+#   Method  : POST
+#   URL     : https://api.github.com/repos/am140512623/candle-scanner/actions/workflows/scan-crypto-daily.yml/dispatches
+#   Headers : Authorization: Bearer <GitHub PAT with 'actions: write' on this repo>
+#             Accept: application/vnd.github+json
+#             X-GitHub-Api-Version: 2022-11-28
+#   Body    : {"ref":"main","inputs":{"frames":"<FRAMES>"}}
+#
+#   00:00  frames=""          (empty -> all frames; 2D/3D/4D self-skip off-days)
+#   06:00  frames="6H"
+#   08:00  frames="8H"
+#   12:00  frames="6H,12H"
+#   16:00  frames="8H"
+#   18:00  frames="6H"
+# ------------------------------------------------------------------------------
 on:
-  schedule:
-    - cron: "4 0 * * *"
-    - cron: "4 6 * * *"
-    - cron: "4 8 * * *"
-    - cron: "4 12 * * *"
-    - cron: "4 16 * * *"
-    - cron: "4 18 * * *"
   workflow_dispatch:
+    inputs:
+      frames:
+        description: "Frames to scan, comma-separated (e.g. 6H,12H). Empty = all."
+        required: false
+        default: ""
 
 jobs:
   scan:
@@ -26,10 +47,4 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python scan_crypto.py
         env:
-          CRYPTO_FRAMES: >-
-            ${{ github.event.schedule == '4 6 * * *' && '6H'
-            || github.event.schedule == '4 8 * * *' && '8H'
-            || github.event.schedule == '4 12 * * *' && '6H,12H'
-            || github.event.schedule == '4 16 * * *' && '8H'
-            || github.event.schedule == '4 18 * * *' && '6H'
-            || '6H,8H,12H,1D,2D,3D,4D' }}
+          CRYPTO_FRAMES: ${{ inputs.frames }}
