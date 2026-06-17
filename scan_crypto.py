@@ -19,7 +19,7 @@ import pandas as pd
 import scan_all as s
 
 # --- Separate bot for these crypto alerts ---
-s.BOT_TOKEN = os.environ.get("CRYPTO_BOT_TOKEN") or "8980241214:AAGCgROHDxMAjakuuU5c7mrzEESsy9PxRD4"
+s.BOT_TOKEN = os.environ.get("CRYPTO_BOT_TOKEN") or "YOUR_CRYPTO_BOT_TOKEN"
 s.CHAT_IDS = [
     "7788611624",   # A
     "6173185769",   # m
@@ -210,6 +210,11 @@ def run(crypto):
 
 
 def main():
+    # Token now comes from the CRYPTO_BOT_TOKEN secret (no hardcoded fallback).
+    # Log readiness -- never the token itself -- so a run shows at a glance
+    # whether alerts will actually send.
+    print("Telegram: " + ("configured" if s._telegram_ready()
+                           else "NOT configured -- alerts will be skipped"))
     print("Building crypto universe...")
     crypto = s.get_top_crypto(CRYPTO_TOP_N)
     print(f"  Crypto: {len(crypto)} from top {CRYPTO_TOP_N} (stablecoins dropped)")
