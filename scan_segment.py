@@ -10,8 +10,8 @@ SEGMENT environment variable. All of these scan the WEEKLY (and MONTHLY) candle:
     stock_mid        US stocks  $2B - $10B               -> your stock bot
     stock_small      US stocks  $250M - $2B              -> your stock bot
 
-(Crypto rank 1-300 on the intraday 6h..4d frames is handled separately by bot #2,
-scan_crypto.py.)
+(Crypto rank 1-300 is handled separately by bot #2, scan_crypto.py -- which now
+covers 6h..4d intraday PLUS weekly and monthly for those top 300 coins.)
 
 Each segment has its OWN Telegram bot. The workflow passes that bot's token in as
 SEG_TOKEN (from a GitHub secret); alerts go to the recipients in DEFAULT_CHATS
