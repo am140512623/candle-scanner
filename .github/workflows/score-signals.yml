@@ -1,0 +1,35 @@
+name: Score signals (daily)
+
+# Reads signals.csv (written by the scanners when an alert fires), looks up what
+# the price did afterward at fixed horizons (+1d/+3d/+7d/+30d/+90d), and writes
+# results.csv with a rose/fell verdict + a win-rate-per-timeframe summary.
+#
+# Runs once a day so the short horizons are captured accurately. It rebuilds
+# results.csv from scratch each run, so it's safe to also trigger by hand.
+#
+# Optional Telegram summary: add repo secrets SCORE_BOT_TOKEN (a bot token) and
+# SCORE_CHAT_ID (comma-separated chat IDs) and the win-rate summary is messaged
+# to you on each run. Leave them unset to just keep the CSV.
+on:
+  schedule:
+    - cron: "30 1 * * *"   # daily 01:30 UTC (after the scanners have logged)
+  workflow_dispatch:
+
+jobs:
+  score:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write    # so results.csv can be committed back to the repo
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python score_signals.py
+        env:
+          SCORE_BOT_TOKEN: ${{ secrets.SCORE_BOT_TOKEN }}
+          SCORE_CHAT_ID: ${{ secrets.SCORE_CHAT_ID }}
+      - name: Save results
+        if: always()
+        run: bash .github/scripts/commit_data.sh results.csv

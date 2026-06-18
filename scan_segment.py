@@ -111,6 +111,7 @@ def scan_segment(universe, label, kind, asset):
             msg = (f"[{tf['label']}] MATCH: {t} ({k}) formed your Liquidity Grab pattern!\n"
                    f"Yahoo: {yahoo}\nTradingView: {tv}")
             print("  " + msg.splitlines()[0])
+            s.log_signal(k, t, tf["label"], df)
             try:
                 chart_path = s.save_chart(t, k, df, tf["label"])
                 s.send_telegram_photo(chart_path, msg)

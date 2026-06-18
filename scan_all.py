@@ -9,6 +9,7 @@ runs your pattern check on each, and prints every match. Fill in BOT_TOKEN /
 CHAT_ID below if you also want Telegram alerts.
 """
 
+import csv
 import datetime
 import io
 import logging
@@ -353,6 +354,67 @@ def send_telegram_photo(image_path, caption):
 
 
 # ---------------------------------------------------------------------------
+# SIGNAL LOG (so we can later track what the price did after each alert)
+# ---------------------------------------------------------------------------
+# Every alert appends one row here; score_signals.py reads it back, looks up the
+# price afterwards, and works out whether each signal rose or fell. The bots are
+# stateless, so this file is committed back to the repo by the workflow -- that
+# is what gives the signals a memory across runs.
+SIGNALS_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signals.csv")
+SIGNAL_FIELDS = [
+    "signal_id", "alert_date", "candle_date", "kind", "ticker",
+    "timeframe", "entry_close", "stop_level",
+]
+
+
+def _existing_signal_ids():
+    """IDs already in signals.csv, so the same candle is never logged twice."""
+    ids = set()
+    try:
+        with open(SIGNALS_CSV, newline="") as f:
+            for row in csv.DictReader(f):
+                ids.add(row.get("signal_id", ""))
+    except FileNotFoundError:
+        pass
+    return ids
+
+
+def log_signal(kind, ticker, timeframe, df):
+    """Record one match in signals.csv: its entry (close) price and the candle it
+    formed in, keyed by a unique signal_id. Re-logging the same candle is a no-op,
+    so re-runs and overlapping schedules can't create duplicates."""
+    try:
+        candle_date = pd.Timestamp(df.index[-1]).date().isoformat()
+        entry_close = float(df["Close"].iloc[-1])
+        # Stop level = the lowest low of the two pattern candles. The pattern
+        # requires candle 2 to swallow candle 1's low, so this is normally c2's
+        # low -- the price the trade is invalidated at if the market retreats.
+        stop_level = float(min(df["Low"].iloc[-2], df["Low"].iloc[-1]))
+    except Exception as e:
+        print(f"    (could not log signal for {ticker}: {e})")
+        return
+    signal_id = f"{kind}_{ticker}_{timeframe}_{candle_date}"
+    if signal_id in _existing_signal_ids():
+        return
+    new_file = not os.path.exists(SIGNALS_CSV)
+    with open(SIGNALS_CSV, "a", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=SIGNAL_FIELDS)
+        if new_file:
+            w.writeheader()
+        w.writerow({
+            "signal_id": signal_id,
+            "alert_date": datetime.datetime.now(datetime.timezone.utc).date().isoformat(),
+            "candle_date": candle_date,
+            "kind": kind,
+            "ticker": ticker,
+            "timeframe": timeframe,
+            "entry_close": f"{entry_close:.10g}",
+            "stop_level": f"{stop_level:.10g}",
+        })
+    print(f"    logged signal {signal_id} @ {entry_close:.6g}")
+
+
+# ---------------------------------------------------------------------------
 # CHARTS
 # ---------------------------------------------------------------------------
 def _safe_name(text):
@@ -488,6 +550,7 @@ def main():
                    f"Yahoo: {yahoo}\nTradingView: {tradingview}")
             print("  " + msg)
             email_lines.append(msg)
+            log_signal(kind, t, tf_label, df)
             try:
                 chart_path = save_chart(t, kind, df, tf_label)
                 print(f"    chart -> {chart_path}")
