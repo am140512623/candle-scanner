@@ -238,6 +238,7 @@ def run(crypto, catalog=INTRADAY_FRAMES):
             msg = (f"[{tf['label']}] MATCH: {t} (CRYPTO) formed your Liquidity Grab pattern!\n"
                    f"Yahoo: {yahoo}\nTradingView: {tv}")
             print("  " + msg.splitlines()[0])
+            s.log_signal("CRYPTO", t, tf["label"], d)
             try:
                 chart_path = s.save_chart(t, "CRYPTO", d, tf["label"])
                 s.send_telegram_photo(chart_path, msg)

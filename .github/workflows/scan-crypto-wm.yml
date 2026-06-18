@@ -39,6 +39,8 @@ on:
 jobs:
   scan:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write    # so logged signals can be committed back to the repo
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -52,3 +54,6 @@ jobs:
           # Wide window: absorbs GitHub's scheduler lateness yet stays well under
           # a day, so the same weekly/monthly candle is never alerted twice.
           CRYPTO_FRESHNESS_MIN: "720"
+      - name: Save logged signals
+        if: always()
+        run: bash .github/scripts/commit_data.sh signals.csv
