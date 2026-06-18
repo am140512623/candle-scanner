@@ -1,0 +1,2 @@
+signal_id,alert_date,candle_date,kind,ticker,timeframe,entry_close,stop_level
+CRYPTO_USDTB34691-USD_6H_2026-06-18,2026-06-18,2026-06-18,CRYPTO,USDTB34691-USD,6H,0.9999790192,0.9995877743
