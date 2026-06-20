@@ -37,13 +37,17 @@ import yfinance as yf
 import scan_all as s
 
 RESULTS_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results.csv")
+SUMMARY_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "summary.csv")
+
+SUMMARY_FIELDS = ["bot", "total_signals", "scored", "rose", "fell",
+                  "stopped_out", "pending", "win_rate_pct"]
 
 # (column suffix, days after the candle close) -- covers the fast intraday bots
 # and the slower weekly/monthly ones in one sweep.
 HORIZONS = [("1d", 1), ("3d", 3), ("7d", 7), ("30d", 30), ("90d", 90), ("180d", 180)]
 
 RESULT_FIELDS = (
-    ["signal_id", "alert_date", "candle_date", "kind", "ticker",
+    ["signal_id", "bot", "alert_date", "candle_date", "kind", "ticker",
      "timeframe", "entry_close", "stop_level"]
     + [f"chg_{name}" for name, _ in HORIZONS]
     + ["last_chg", "stop_date", "stop_chg", "result", "status"]
@@ -162,6 +166,54 @@ def summarize(results):
     return "\n".join(lines)
 
 
+def build_summary(results):
+    """One totals row per bot: how many signals it fired and how they turned out.
+    `scored` excludes still-pending (too-new) signals; win_rate is rose/scored."""
+    by_bot = {}
+    for r in results:
+        bot = r.get("bot") or "unknown"
+        agg = by_bot.setdefault(
+            bot, {"total_signals": 0, "scored": 0, "rose": 0,
+                  "fell": 0, "stopped_out": 0, "pending": 0})
+        agg["total_signals"] += 1
+        res = r["result"]
+        if res == "rose":
+            agg["rose"] += 1
+        elif res == "fell" or res == "flat":
+            agg["fell"] += 1
+        elif res == "stopped_out":
+            agg["stopped_out"] += 1
+        if r["status"] == "pending":
+            agg["pending"] += 1
+        else:
+            agg["scored"] += 1
+
+    rows = []
+    for bot in sorted(by_bot):
+        a = by_bot[bot]
+        rate = 100 * a["rose"] / a["scored"] if a["scored"] else 0
+        rows.append({
+            "bot": bot,
+            "total_signals": a["total_signals"],
+            "scored": a["scored"],
+            "rose": a["rose"],
+            "fell": a["fell"],
+            "stopped_out": a["stopped_out"],
+            "pending": a["pending"],
+            "win_rate_pct": f"{rate:.0f}",
+        })
+    return rows
+
+
+def write_summary(rows):
+    with open(SUMMARY_CSV, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=SUMMARY_FIELDS)
+        w.writeheader()
+        for row in rows:
+            w.writerow(row)
+    print(f"Wrote {SUMMARY_CSV}")
+
+
 def maybe_telegram(summary):
     """Send the summary to Telegram only if SCORE_BOT_TOKEN is configured."""
     token = os.environ.get("SCORE_BOT_TOKEN")
@@ -197,6 +249,8 @@ def main():
         for r in results:
             w.writerow({k: r.get(k, "") for k in RESULT_FIELDS})
     print(f"Wrote {RESULTS_CSV}")
+
+    write_summary(build_summary(results))
 
     summary = summarize(results)
     print("\n" + summary)

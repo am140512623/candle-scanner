@@ -388,7 +388,7 @@ def send_telegram_photo(image_path, caption):
 # is what gives the signals a memory across runs.
 SIGNALS_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signals.csv")
 SIGNAL_FIELDS = [
-    "signal_id", "alert_date", "candle_date", "kind", "ticker",
+    "signal_id", "bot", "alert_date", "candle_date", "kind", "ticker",
     "timeframe", "entry_close", "stop_level",
 ]
 
@@ -405,10 +405,12 @@ def _existing_signal_ids():
     return ids
 
 
-def log_signal(kind, ticker, timeframe, df):
+def log_signal(kind, ticker, timeframe, df, bot="scan_all"):
     """Record one match in signals.csv: its entry (close) price and the candle it
-    formed in, keyed by a unique signal_id. Re-logging the same candle is a no-op,
-    so re-runs and overlapping schedules can't create duplicates."""
+    formed in, keyed by a unique signal_id. `bot` names which of the scanners
+    found it (e.g. stock_mega, crypto_intraday) so per-bot totals can be tallied.
+    Re-logging the same candle is a no-op, so re-runs and overlapping schedules
+    can't create duplicates."""
     try:
         candle_date = pd.Timestamp(df.index[-1]).date().isoformat()
         entry_close = float(df["Close"].iloc[-1])
@@ -429,6 +431,7 @@ def log_signal(kind, ticker, timeframe, df):
             w.writeheader()
         w.writerow({
             "signal_id": signal_id,
+            "bot": bot,
             "alert_date": datetime.datetime.now(datetime.timezone.utc).date().isoformat(),
             "candle_date": candle_date,
             "kind": kind,
