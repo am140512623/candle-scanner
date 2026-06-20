@@ -136,11 +136,11 @@ def is_flat(df, lookback=FLAT_LOOKBACK, threshold=FLAT_THRESHOLD):
 #   bearish -> red,   strong close near its low,  high sweeps ABOVE the reference
 #              high(s), close BELOW the reference close(s)
 #
-# The reference is the CONSOLIDATION BLOCK -- the two candles right before the
-# trigger -- and the trigger must clear the WHOLE block: sweep past BOTH of their
-# extremes and close past BOTH of their closes. (With only two candles of history
-# the block is just the single prior candle.) This is the strict 3-candle form:
-# a true sweep of the whole recent range, not merely the nearest candle.
+# It fires on EITHER layout (whichever holds):
+#   2-candle: the trigger clears just the single candle right before it -- sweeps
+#             past its extreme and closes across its close.
+#   3-candle: the trigger clears the wider two-candle consolidation block --
+#             sweeps past BOTH extremes and closes past BOTH closes.
 def _liquidity_grab(df, bullish):
     if df is None or len(df) < 2:
         return False
@@ -169,10 +169,13 @@ def _liquidity_grab(df, bullish):
             return l < min(lows) and c > max(closes)
         return h > max(highs) and c < min(closes)
 
-    # Require the trigger to clear the whole consolidation block: the two candles
-    # before it (or the single prior candle if that's all the history we have).
-    refs = [-3, -2] if len(df) >= 3 else [-2]
-    return clears(refs)
+    # Fire on EITHER form: the trigger clears just the candle before it (2-candle),
+    # or it clears the wider two-candle block (3-candle).
+    if clears([-2]):
+        return True
+    if len(df) >= 3 and clears([-3, -2]):
+        return True
+    return False
 
 
 def check_pattern(df):
