@@ -98,7 +98,7 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (weekly-scanner)"}
 
 
 # ---------------------------------------------------------------------------
-# YOUR PATTERN (unchanged)
+# YOUR PATTERN
 # ---------------------------------------------------------------------------
 # A pegged stablecoin barely moves: over a recent window its entire high-to-low
 # range is a tiny fraction of its price. We drop those -- a "Liquidity Grab" on a
@@ -126,34 +126,70 @@ def is_flat(df, lookback=FLAT_LOOKBACK, threshold=FLAT_THRESHOLD):
         return False
 
 
-def check_pattern(df):
+# Shared engine for both patterns. There's NO shape requirement on the lead-in
+# candle(s) -- only the trigger (the last, newest candle) has to qualify: it must
+# be a decisive candle of the right colour whose wick sweeps PAST the reference
+# candle(s) and whose close lands across their close(s).
+#
+#   bullish -> green, strong close near its high, low sweeps BELOW the reference
+#              low(s), close ABOVE the reference close(s)
+#   bearish -> red,   strong close near its low,  high sweeps ABOVE the reference
+#              high(s), close BELOW the reference close(s)
+#
+# The reference is the CONSOLIDATION BLOCK -- the two candles right before the
+# trigger -- and the trigger must clear the WHOLE block: sweep past BOTH of their
+# extremes and close past BOTH of their closes. (With only two candles of history
+# the block is just the single prior candle.) This is the strict 3-candle form:
+# a true sweep of the whole recent range, not merely the nearest candle.
+def _liquidity_grab(df, bullish):
     if df is None or len(df) < 2:
         return False
 
-    c1_open, c1_close, c1_high, c1_low = df["Open"].iloc[-2], df["Close"].iloc[-2], df["High"].iloc[-2], df["Low"].iloc[-2]
-    c2_open, c2_close, c2_high, c2_low = df["Open"].iloc[-1], df["Close"].iloc[-1], df["High"].iloc[-1], df["Low"].iloc[-1]
-
-    if pd.isna([c1_open, c1_close, c2_open, c2_close]).any():
+    o, c, h, l = (df["Open"].iloc[-1], df["Close"].iloc[-1],
+                  df["High"].iloc[-1], df["Low"].iloc[-1])
+    if pd.isna([o, c]).any():
         return False
 
-    c1_green = c1_close > c1_open
-    c2_green = c2_close > c2_open
+    # The trigger candle: right colour + a decisive close (body beats the tail).
+    if bullish:
+        if not (c > o and (c - o) > (h - c)):
+            return False
+    else:
+        if not (c < o and (o - c) > (c - l)):
+            return False
 
-    body_one = c1_close - c1_open
-    upper_tail_one = c1_high - c1_close
-    long_upper_tail = upper_tail_one > 0
-    small_body_one = body_one < (c1_high - c1_low) * 0.7
+    def clears(idxs):
+        """True if the trigger sweeps past, and closes across, every ref candle."""
+        highs = [df["High"].iloc[i] for i in idxs]
+        lows = [df["Low"].iloc[i] for i in idxs]
+        closes = [df["Close"].iloc[i] for i in idxs]
+        if pd.isna(closes).any():
+            return False
+        if bullish:
+            return l < min(lows) and c > max(closes)
+        return h > max(highs) and c < min(closes)
 
-    body_two = c2_close - c2_open
-    upper_tail_two = c2_high - c2_close
-    strong_close = body_two > upper_tail_two
-    # Candle 2 must close above candle 1's close. The open-gap is ignored
-    # (a few dollars above/below candle 1's close no longer disqualifies it).
-    engulfs_body = c2_close > c1_close
+    # Require the trigger to clear the whole consolidation block: the two candles
+    # before it (or the single prior candle if that's all the history we have).
+    refs = [-3, -2] if len(df) >= 3 else [-2]
+    return clears(refs)
 
-    bottom_swallow = c2_low < c1_low
 
-    return c1_green and c2_green and long_upper_tail and small_body_one and strong_close and engulfs_body and bottom_swallow
+def check_pattern(df):
+    return _liquidity_grab(df, bullish=True)
+
+
+# ---------------------------------------------------------------------------
+# THE BEARISH MIRROR (short setups)
+# ---------------------------------------------------------------------------
+def check_pattern_bearish(df):
+    return _liquidity_grab(df, bullish=False)
+
+
+def pattern_name(direction):
+    """Human label for the alert/chart. Long = the original bullish grab, short =
+    the bearish mirror."""
+    return "Bearish Liquidity Grab (SHORT)" if direction == "short" else "Liquidity Grab"
 
 
 # ---------------------------------------------------------------------------
@@ -388,7 +424,7 @@ def send_telegram_photo(image_path, caption):
 # is what gives the signals a memory across runs.
 SIGNALS_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signals.csv")
 SIGNAL_FIELDS = [
-    "signal_id", "bot", "alert_date", "candle_date", "kind", "ticker",
+    "signal_id", "bot", "alert_date", "candle_date", "kind", "direction", "ticker",
     "timeframe", "entry_close", "stop_level",
 ]
 
@@ -432,6 +468,9 @@ def _migrate_signals_schema():
     for r in rows:
         if not r.get("bot"):
             r["bot"] = _infer_bot(r.get("kind", ""), r.get("timeframe", ""))
+        if not r.get("direction"):
+            # Every signal logged before this column existed was the bullish grab.
+            r["direction"] = "long"
     with open(SIGNALS_CSV, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=SIGNAL_FIELDS)
         w.writeheader()
@@ -440,23 +479,32 @@ def _migrate_signals_schema():
     print("  (migrated signals.csv to the current column layout)")
 
 
-def log_signal(kind, ticker, timeframe, df, bot="scan_all"):
+def log_signal(kind, ticker, timeframe, df, bot="scan_all", direction="long"):
     """Record one match in signals.csv: its entry (close) price and the candle it
     formed in, keyed by a unique signal_id. `bot` names which of the scanners
     found it (e.g. stock_mega, crypto_intraday) so per-bot totals can be tallied.
+    `direction` is "long" (bullish grab) or "short" (bearish breakdown).
     Re-logging the same candle is a no-op, so re-runs and overlapping schedules
     can't create duplicates."""
     try:
         candle_date = pd.Timestamp(df.index[-1]).date().isoformat()
         entry_close = float(df["Close"].iloc[-1])
-        # Stop level = the lowest low of the two pattern candles. The pattern
-        # requires candle 2 to swallow candle 1's low, so this is normally c2's
-        # low -- the price the trade is invalidated at if the market retreats.
-        stop_level = float(min(df["Low"].iloc[-2], df["Low"].iloc[-1]))
+        if direction == "short":
+            # Short stop = the highest high of the two pattern candles -- the swept
+            # high. If price climbs back above it the breakdown has failed.
+            stop_level = float(max(df["High"].iloc[-2], df["High"].iloc[-1]))
+        else:
+            # Long stop = the lowest low of the two pattern candles. The pattern
+            # requires candle 2 to swallow candle 1's low, so this is normally c2's
+            # low -- the price the trade is invalidated at if the market retreats.
+            stop_level = float(min(df["Low"].iloc[-2], df["Low"].iloc[-1]))
     except Exception as e:
         print(f"    (could not log signal for {ticker}: {e})")
         return
-    signal_id = f"{kind}_{ticker}_{timeframe}_{candle_date}"
+    # Long IDs keep their original shape so historical rows never re-log; shorts
+    # get a SHORT_ namespace so a green and red signal on the same candle coexist.
+    prefix = "SHORT_" if direction == "short" else ""
+    signal_id = f"{prefix}{kind}_{ticker}_{timeframe}_{candle_date}"
     _migrate_signals_schema()   # align an older file before we append to it
     if signal_id in _existing_signal_ids():
         return
@@ -471,6 +519,7 @@ def log_signal(kind, ticker, timeframe, df, bot="scan_all"):
             "alert_date": datetime.datetime.now(datetime.timezone.utc).date().isoformat(),
             "candle_date": candle_date,
             "kind": kind,
+            "direction": direction,
             "ticker": ticker,
             "timeframe": timeframe,
             "entry_close": f"{entry_close:.10g}",
@@ -486,7 +535,7 @@ def _safe_name(text):
     return "".join(c if c.isalnum() else "_" for c in text)
 
 
-def save_chart(ticker, kind, df, timeframe="WEEKLY", bars=40):
+def save_chart(ticker, kind, df, timeframe="WEEKLY", bars=40, direction="long"):
     """Save a candlestick PNG with the two pattern candles highlighted."""
     label = COMMODITIES.get(ticker, ticker)          # show "Gold (GLD)" instead of a symbol
     candle = df.index[-1].date()                     # the candle this match is in
@@ -495,12 +544,14 @@ def save_chart(ticker, kind, df, timeframe="WEEKLY", bars=40):
     os.makedirs(out_dir, exist_ok=True)
     plot_df = df.tail(bars)
     pattern_dates = [df.index[-2], df.index[-1]]  # the two candles that triggered
-    out = os.path.join(out_dir, f"{timeframe}_{kind}_{_safe_name(label)}_{candle}.png")
+    # Keep long filenames byte-identical to before; tag shorts so the two don't collide.
+    tag = "SHORT_" if direction == "short" else ""
+    out = os.path.join(out_dir, f"{timeframe}_{tag}{kind}_{_safe_name(label)}_{candle}.png")
     mpf.plot(
         plot_df,
         type="candle",
         style="charles",
-        title=f"\n{label} ({kind}) - {timeframe} Liquidity Grab",
+        title=f"\n{label} ({kind}) - {timeframe} {pattern_name(direction)}",
         ylabel="Price",
         vlines=dict(vlines=pattern_dates, colors="royalblue", alpha=0.25, linewidths=10),
         savefig=dict(fname=out, dpi=120, bbox_inches="tight"),
@@ -528,8 +579,11 @@ def scan(tickers, label, interval, period, closed_only=False):
                 scanned += 1
                 if is_flat(df):
                     continue          # pegged stablecoin -- noise, skip it
+                # A candle is either green or red, so at most one of these fires.
                 if check_pattern(df):
-                    matches.append((t, df.copy()))
+                    matches.append((t, df.copy(), "long"))
+                elif check_pattern_bearish(df):
+                    matches.append((t, df.copy(), "short"))
             except (KeyError, IndexError):
                 continue
     print(f"[{label}] scanned {scanned}/{len(tickers)} (rest had no Yahoo data)")
@@ -550,12 +604,13 @@ def _mark_monthly_run(month_key):
 
 
 def run_timeframe(tf, groups):
-    """Scan every asset group on one timeframe; return list of (kind, ticker, df)."""
+    """Scan every asset group on one timeframe; return list of
+    (kind, ticker, df, direction)."""
     print(f"\n--- {tf['label']} ({tf['interval']}) ---")
     found = []
     for kind, tickers, label in groups:
         results = scan(tickers, label, tf["interval"], tf["period"], tf["closed_only"])
-        found += [(kind, t, df) for t, df in results]
+        found += [(kind, t, df, direction) for t, df, direction in results]
     return found
 
 
@@ -586,7 +641,7 @@ def main():
     this_month = datetime.date.today().strftime("%Y-%m")
     monthly_due_local = _last_monthly_run() != this_month
 
-    all_matches = []  # (kind, ticker, df, timeframe_label)
+    all_matches = []  # (kind, ticker, df, timeframe_label, direction)
     for tf in TIMEFRAMES:
         is_monthly = tf["monthly_only"]
         if mode == "weekly":
@@ -600,7 +655,7 @@ def main():
                 print(f"\n--- {tf['label']} skipped (already scanned for {this_month}) ---")
             continue
         found = run_timeframe(tf, groups)
-        all_matches += [(kind, t, df, tf["label"]) for kind, t, df in found]
+        all_matches += [(kind, t, df, tf["label"], direction) for kind, t, df, direction in found]
         if is_monthly and mode != "weekly":
             _mark_monthly_run(this_month)  # remember we did the monthly pass
 
@@ -610,16 +665,16 @@ def main():
         chart_folders = set()
         chart_paths = []
         email_lines = []
-        for kind, t, df, tf_label in all_matches:
+        for kind, t, df, tf_label, direction in all_matches:
             yahoo, tradingview = chart_links(kind, t)
             msg = (f"[{tf_label}] MATCH: {COMMODITIES.get(t, t)} ({kind}) "
-                   f"formed your Liquidity Grab pattern!\n"
+                   f"formed your {pattern_name(direction)} pattern!\n"
                    f"Yahoo: {yahoo}\nTradingView: {tradingview}")
             print("  " + msg)
             email_lines.append(msg)
-            log_signal(kind, t, tf_label, df)
+            log_signal(kind, t, tf_label, df, direction=direction)
             try:
-                chart_path = save_chart(t, kind, df, tf_label)
+                chart_path = save_chart(t, kind, df, tf_label, direction=direction)
                 print(f"    chart -> {chart_path}")
                 chart_folders.add(os.path.dirname(chart_path))
                 chart_paths.append(chart_path)

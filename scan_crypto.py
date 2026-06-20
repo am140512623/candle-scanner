@@ -228,21 +228,24 @@ def run(crypto, catalog=INTRADAY_FRAMES, bot="crypto_intraday"):
                     continue
                 if s.is_flat(d):
                     continue          # pegged stablecoin -- noise, skip it
+                # A candle is either green or red, so at most one of these fires.
                 if s.check_pattern(d):
-                    matches.append((t, d))
+                    matches.append((t, d, "long"))
+                elif s.check_pattern_bearish(d):
+                    matches.append((t, d, "short"))
             except Exception:
                 continue
         print(f"\n[{tf['label']}] {len(matches)} match(es) from {len(base_data)} coins"
               + (f" ({stale} skipped: candle not fresh)" if stale else ""))
-        for t, d in matches:
+        for t, d, direction in matches:
             total += 1
             yahoo, tv = s.chart_links("CRYPTO", t)
-            msg = (f"[{tf['label']}] MATCH: {t} (CRYPTO) formed your Liquidity Grab pattern!\n"
+            msg = (f"[{tf['label']}] MATCH: {t} (CRYPTO) formed your {s.pattern_name(direction)} pattern!\n"
                    f"Yahoo: {yahoo}\nTradingView: {tv}")
             print("  " + msg.splitlines()[0])
-            s.log_signal("CRYPTO", t, tf["label"], d, bot=bot)
+            s.log_signal("CRYPTO", t, tf["label"], d, bot=bot, direction=direction)
             try:
-                chart_path = s.save_chart(t, "CRYPTO", d, tf["label"])
+                chart_path = s.save_chart(t, "CRYPTO", d, tf["label"], direction=direction)
                 s.send_telegram_photo(chart_path, msg)
             except Exception as e:
                 print(f"    (could not draw chart: {e})")
