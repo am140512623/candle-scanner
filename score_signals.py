@@ -14,8 +14,10 @@ has actually passed, then fills in and never changes (historical closes are fina
 
 The VERDICT for each signal uses a TRAILING take-profit vs a stop-loss:
 
-    - Take-profit targets sit every +10% above entry (+10%, +20%, +30%, ...).
-    - The stop is the lowest low of the two pattern candles (stop_level).
+    - Take-profit targets sit every 10% in the trade's favour (up for a long,
+      down for a short).
+    - The stop is the lowest low of the two pattern candles for a long, or the
+      highest high for a short (stop_level).
     - Before any profit, the stop protects the trade. Once price reaches the
       first +10% rung it rides up, then exits when price pulls back 10% below its
       highest rung -- banking (peak rung - 10%) as realized_pct. E.g. a peak of
@@ -62,7 +64,7 @@ TRAIL_PCT = 10      # pull-back from the peak rung that triggers the exit
 HORIZONS = [("1d", 1), ("3d", 3), ("7d", 7), ("30d", 30), ("90d", 90), ("180d", 180)]
 
 RESULT_FIELDS = (
-    ["signal_id", "bot", "alert_date", "candle_date", "kind", "ticker",
+    ["signal_id", "bot", "alert_date", "candle_date", "kind", "direction", "ticker",
      "timeframe", "entry_close", "stop_level"]
     + [f"chg_{name}" for name, _ in HORIZONS]
     + ["last_chg", "best_target_pct", "realized_pct", "tp_date", "exit_date",
@@ -104,18 +106,26 @@ def close_on_or_after(hist, target_date):
     return float(sub["Close"].iloc[0])
 
 
-def evaluate_trade(hist, candle_date, entry, stop_level):
+def evaluate_trade(hist, candle_date, entry, stop_level, direction="long"):
     """Walk the daily bars after the signal and decide the outcome with a TRAILING
-    take-profit:
+    take-profit. The logic is mirrored for shorts:
 
-      - Before any profit, the pattern-low stop protects the trade.
-      - Once price reaches the first +TP_STEP% rung, the trade rides up; it exits
-        when price pulls back TRAIL_PCT below its highest rung, banking
-        (peak rung - TRAIL_PCT) as realized_pct.
+      LONG (bullish grab):
+        - Before any profit, the pattern-LOW stop protects the trade.
+        - Once price rises +TP_STEP% it rides up; exits when it pulls back
+          TRAIL_PCT below its highest rung, banking (peak - TRAIL_PCT).
+      SHORT (bearish breakdown):
+        - Before any profit, the pattern-HIGH stop protects the trade (a rally
+          back above the swept high invalidates it).
+        - Once price falls -TP_STEP% it rides down; exits when it bounces back
+          TRAIL_PCT above its lowest rung, banking the same (peak - TRAIL_PCT).
+
+    realized_pct / best_target_pct are always the trade's P/L magnitude (positive
+    for a win) regardless of direction, so summaries treat both sides alike.
 
     Outcomes:
         took_profit  -- exited via the trailing target  (win, see realized_pct)
-        stopped_out  -- hit the pattern low before ever reaching +TP_STEP%  (loss)
+        stopped_out  -- hit the stop before ever reaching TP_STEP%  (loss)
         open         -- in profit and still running (or running, neither hit)
         pending      -- not enough price history after the candle yet
 
@@ -132,35 +142,47 @@ def evaluate_trade(hist, candle_date, entry, stop_level):
     if after.empty:
         return blank
 
-    peak_rung = 0          # highest +10% rung reached so far
-    tp_date = ""           # first day price reached +TP_STEP%
+    short = direction == "short"
+    peak_rung = 0          # highest TP_STEP% rung reached so far (in profit direction)
+    tp_date = ""           # first day price reached TP_STEP% in our favour
     activated = False      # has the trade reached the first rung yet?
 
     for ts, bar in after.iterrows():
         day = ts.date()
-        hi_pct = (float(bar["High"]) - entry) / entry * 100
+        high = float(bar["High"])
         low = float(bar["Low"])
+        # Profit moves down for a short, up for a long. The favourable extreme is
+        # the bar's low (short) or high (long); the stop sits the other way.
+        if short:
+            profit_pct = (entry - low) / entry * 100
+            stop_hit = stop_level and high >= stop_level
+        else:
+            profit_pct = (high - entry) / entry * 100
+            stop_hit = stop_level and low <= stop_level
 
         if activated:
             # Trailing exit, measured against the peak as it stood BEFORE this bar.
             trail_pct = peak_rung - TRAIL_PCT
-            trail_price = entry * (1 + trail_pct / 100)
-            if low <= trail_price:
+            trail_price = entry * (1 - trail_pct / 100) if short else entry * (1 + trail_pct / 100)
+            pulled_back = high >= trail_price if short else low <= trail_price
+            if pulled_back:
                 return {"result": "took_profit", "status": "took_profit",
                         "best_target_pct": peak_rung, "realized_pct": trail_pct,
                         "tp_date": tp_date, "exit_date": day.isoformat(),
                         "stop_date": "", "stop_chg": ""}
-        elif stop_level and low <= stop_level:
-            # Not in profit yet and the pattern low gave way -> a clean loss.
+        elif stop_hit:
+            # Not in profit yet and the stop gave way -> a clean loss. stop_chg is
+            # the P/L at the stop (negative): below entry for a long, above for a short.
+            stop_chg = (entry - stop_level) / entry * 100 if short else (stop_level - entry) / entry * 100
             return {"result": "stopped_out", "status": "stopped_out",
                     "best_target_pct": 0, "realized_pct": "",
                     "tp_date": "", "exit_date": "",
                     "stop_date": day.isoformat(),
-                    "stop_chg": f"{(stop_level - entry) / entry * 100:+.2f}"}
+                    "stop_chg": f"{stop_chg:+.2f}"}
 
-        # Update the peak from this bar's high (after the exit checks above).
-        if hi_pct >= TP_STEP:
-            rung = int(hi_pct // TP_STEP) * TP_STEP
+        # Update the peak from this bar's favourable move (after the exit checks).
+        if profit_pct >= TP_STEP:
+            rung = int(profit_pct // TP_STEP) * TP_STEP
             if rung > peak_rung:
                 peak_rung = rung
             if not activated:
@@ -179,7 +201,9 @@ def score_one(row, hist):
     candle_date = datetime.date.fromisoformat(row["candle_date"])
     entry = float(row["entry_close"])
     stop_level = float(row["stop_level"]) if row.get("stop_level") else 0.0
+    direction = row.get("direction") or "long"   # pre-column rows are all long
     out = dict(row)
+    out["direction"] = direction
 
     # Informational horizons: where price sat at each age (independent of TP/stop).
     last_chg = ""
@@ -196,7 +220,7 @@ def score_one(row, hist):
     out["last_chg"] = last_chg
 
     # The verdict: which came first, a take-profit target or the stop?
-    out.update(evaluate_trade(hist, candle_date, entry, stop_level))
+    out.update(evaluate_trade(hist, candle_date, entry, stop_level, direction))
     return out
 
 

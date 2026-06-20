@@ -105,15 +105,15 @@ def scan_segment(universe, label, kind, asset, bot):
             continue
         if mode == "monthly" and not is_monthly:
             continue
-        for k, t, df in s.run_timeframe(tf, groups):
+        for k, t, df, direction in s.run_timeframe(tf, groups):
             total += 1
             yahoo, tv = s.chart_links(k, t)
-            msg = (f"[{tf['label']}] MATCH: {t} ({k}) formed your Liquidity Grab pattern!\n"
+            msg = (f"[{tf['label']}] MATCH: {t} ({k}) formed your {s.pattern_name(direction)} pattern!\n"
                    f"Yahoo: {yahoo}\nTradingView: {tv}")
             print("  " + msg.splitlines()[0])
-            s.log_signal(k, t, tf["label"], df, bot=bot)
+            s.log_signal(k, t, tf["label"], df, bot=bot, direction=direction)
             try:
-                chart_path = s.save_chart(t, k, df, tf["label"])
+                chart_path = s.save_chart(t, k, df, tf["label"], direction=direction)
                 s.send_telegram_photo(chart_path, msg)
             except Exception as e:
                 print(f"    (could not draw chart: {e})")
