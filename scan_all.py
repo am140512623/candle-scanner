@@ -100,6 +100,32 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (weekly-scanner)"}
 # ---------------------------------------------------------------------------
 # YOUR PATTERN (unchanged)
 # ---------------------------------------------------------------------------
+# A pegged stablecoin barely moves: over a recent window its entire high-to-low
+# range is a tiny fraction of its price. We drop those -- a "Liquidity Grab" on a
+# coin glued to ~$1 is just decimal noise. Judged by VOLATILITY, not price level,
+# so a genuinely volatile coin that happens to trade near $1 is still kept. The
+# window is measured in CANDLES, so on each timeframe it spans a sensible amount
+# of real time (20 x 6H ~ 5 days; 20 weekly ~ 5 months) -- and a real asset is
+# never that flat over those spans, so stocks are unaffected too.
+FLAT_LOOKBACK = 20      # candles to measure flatness over
+FLAT_THRESHOLD = 0.02   # skip if the full range is under 2% of price
+
+
+def is_flat(df, lookback=FLAT_LOOKBACK, threshold=FLAT_THRESHOLD):
+    """True if `df` barely moves over its last `lookback` candles (a peg/stablecoin)."""
+    try:
+        recent = df.tail(lookback)
+        if len(recent) < 2:
+            return False
+        price = float(recent["Close"].iloc[-1])
+        if price <= 0:
+            return False
+        rng = float(recent["High"].max()) - float(recent["Low"].min())
+        return (rng / price) < threshold
+    except Exception:
+        return False
+
+
 def check_pattern(df):
     if df is None or len(df) < 2:
         return False
@@ -461,6 +487,8 @@ def scan(tickers, label, interval, period, closed_only=False):
                 if df.empty:
                     continue
                 scanned += 1
+                if is_flat(df):
+                    continue          # pegged stablecoin -- noise, skip it
                 if check_pattern(df):
                     matches.append((t, df.copy()))
             except (KeyError, IndexError):

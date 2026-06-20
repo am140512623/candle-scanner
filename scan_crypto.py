@@ -226,6 +226,8 @@ def run(crypto, catalog=INTRADAY_FRAMES):
                 if not is_fresh(tf["label"], d.index[-1]):
                     stale += 1
                     continue
+                if s.is_flat(d):
+                    continue          # pegged stablecoin -- noise, skip it
                 if s.check_pattern(d):
                     matches.append((t, d))
             except Exception:
