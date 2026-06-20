@@ -405,6 +405,41 @@ def _existing_signal_ids():
     return ids
 
 
+def _infer_bot(kind, timeframe):
+    """Best guess at which bot produced an old row that predates the `bot` column,
+    from its kind + timeframe. Stock cap tiers are indistinguishable, so unknown."""
+    tf = (timeframe or "").upper()
+    if kind == "CRYPTO":
+        if tf in {"6H", "8H", "12H", "1D", "2D", "3D", "4D"}:
+            return "crypto_intraday"
+        if tf in {"1W", "1M"}:
+            return "crypto_wm"
+    return "unknown"
+
+
+def _migrate_signals_schema():
+    """Keep signals.csv on the current column set. If an older file is missing
+    newer columns (e.g. it predates `bot`), rewrite it with the full header --
+    back-filling `bot` where it can be inferred -- so appended rows stay aligned
+    instead of silently shifting into the wrong columns."""
+    if not os.path.exists(SIGNALS_CSV):
+        return
+    with open(SIGNALS_CSV, newline="") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames == SIGNAL_FIELDS:
+            return  # already current -- nothing to do
+        rows = list(reader)
+    for r in rows:
+        if not r.get("bot"):
+            r["bot"] = _infer_bot(r.get("kind", ""), r.get("timeframe", ""))
+    with open(SIGNALS_CSV, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=SIGNAL_FIELDS)
+        w.writeheader()
+        for r in rows:
+            w.writerow({k: r.get(k, "") for k in SIGNAL_FIELDS})
+    print("  (migrated signals.csv to the current column layout)")
+
+
 def log_signal(kind, ticker, timeframe, df, bot="scan_all"):
     """Record one match in signals.csv: its entry (close) price and the candle it
     formed in, keyed by a unique signal_id. `bot` names which of the scanners
@@ -422,6 +457,7 @@ def log_signal(kind, ticker, timeframe, df, bot="scan_all"):
         print(f"    (could not log signal for {ticker}: {e})")
         return
     signal_id = f"{kind}_{ticker}_{timeframe}_{candle_date}"
+    _migrate_signals_schema()   # align an older file before we append to it
     if signal_id in _existing_signal_ids():
         return
     new_file = not os.path.exists(SIGNALS_CSV)
