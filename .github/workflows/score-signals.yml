@@ -32,4 +32,4 @@ jobs:
           SCORE_CHAT_ID: ${{ secrets.SCORE_CHAT_ID }}
       - name: Save results
         if: always()
-        run: bash .github/scripts/commit_data.sh results.csv
+        run: bash .github/scripts/commit_data.sh results.csv summary.csv

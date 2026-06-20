@@ -38,7 +38,7 @@ def main():
     print(f"  Crypto: {len(crypto)} from top {sc.CRYPTO_TOP_N} (stablecoins dropped)")
     # Scan only the weekly/monthly frames. CRYPTO_FRAMES (e.g. '1W') can still
     # narrow it further; empty = both. 1W self-skips except Mondays, 1M except 1st.
-    sc.run(crypto, sc.WM_FRAMES)
+    sc.run(crypto, sc.WM_FRAMES, bot="crypto_wm")
 
 
 if __name__ == "__main__":

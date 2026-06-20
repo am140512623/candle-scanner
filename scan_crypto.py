@@ -186,7 +186,7 @@ def resample_ohlc(df, rkw):
     return agg.dropna()
 
 
-def run(crypto, catalog=INTRADAY_FRAMES):
+def run(crypto, catalog=INTRADAY_FRAMES, bot="crypto_intraday"):
     """Scan a list of crypto tickers across the selected timeframes, sending each
     match via whatever bot token is currently set on scan_all (s.BOT_TOKEN).
     Returns the match count.
@@ -226,6 +226,8 @@ def run(crypto, catalog=INTRADAY_FRAMES):
                 if not is_fresh(tf["label"], d.index[-1]):
                     stale += 1
                     continue
+                if s.is_flat(d):
+                    continue          # pegged stablecoin -- noise, skip it
                 if s.check_pattern(d):
                     matches.append((t, d))
             except Exception:
@@ -238,7 +240,7 @@ def run(crypto, catalog=INTRADAY_FRAMES):
             msg = (f"[{tf['label']}] MATCH: {t} (CRYPTO) formed your Liquidity Grab pattern!\n"
                    f"Yahoo: {yahoo}\nTradingView: {tv}")
             print("  " + msg.splitlines()[0])
-            s.log_signal("CRYPTO", t, tf["label"], d)
+            s.log_signal("CRYPTO", t, tf["label"], d, bot=bot)
             try:
                 chart_path = s.save_chart(t, "CRYPTO", d, tf["label"])
                 s.send_telegram_photo(chart_path, msg)

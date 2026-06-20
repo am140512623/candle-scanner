@@ -88,7 +88,7 @@ def build_stock_universe(cap_low, cap_high):
     return [sym for sym, cap in rows if low <= cap < high]
 
 
-def scan_segment(universe, label, kind, asset):
+def scan_segment(universe, label, kind, asset, bot):
     """Scan one slice on weekly + monthly, sending each match to Telegram.
 
     SCAN_MODE (set by the workflow's cron) picks the timeframe:
@@ -111,7 +111,7 @@ def scan_segment(universe, label, kind, asset):
             msg = (f"[{tf['label']}] MATCH: {t} ({k}) formed your Liquidity Grab pattern!\n"
                    f"Yahoo: {yahoo}\nTradingView: {tv}")
             print("  " + msg.splitlines()[0])
-            s.log_signal(k, t, tf["label"], df)
+            s.log_signal(k, t, tf["label"], df, bot=bot)
             try:
                 chart_path = s.save_chart(t, k, df, tf["label"])
                 s.send_telegram_photo(chart_path, msg)
@@ -139,7 +139,7 @@ def main():
         universe = build_stock_universe(low, high)
         print(f"  {len(universe)} stocks in this cap tier")
 
-    total = scan_segment(universe, seg["label"], kind, seg["asset"])
+    total = scan_segment(universe, seg["label"], kind, seg["asset"], bot=key)
     print("\n" + "=" * 40)
     print(f"{seg['label']}: {total} total match(es)")
     print("=" * 40)

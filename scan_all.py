@@ -100,6 +100,32 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (weekly-scanner)"}
 # ---------------------------------------------------------------------------
 # YOUR PATTERN (unchanged)
 # ---------------------------------------------------------------------------
+# A pegged stablecoin barely moves: over a recent window its entire high-to-low
+# range is a tiny fraction of its price. We drop those -- a "Liquidity Grab" on a
+# coin glued to ~$1 is just decimal noise. Judged by VOLATILITY, not price level,
+# so a genuinely volatile coin that happens to trade near $1 is still kept. The
+# window is measured in CANDLES, so on each timeframe it spans a sensible amount
+# of real time (20 x 6H ~ 5 days; 20 weekly ~ 5 months) -- and a real asset is
+# never that flat over those spans, so stocks are unaffected too.
+FLAT_LOOKBACK = 20      # candles to measure flatness over
+FLAT_THRESHOLD = 0.02   # skip if the full range is under 2% of price
+
+
+def is_flat(df, lookback=FLAT_LOOKBACK, threshold=FLAT_THRESHOLD):
+    """True if `df` barely moves over its last `lookback` candles (a peg/stablecoin)."""
+    try:
+        recent = df.tail(lookback)
+        if len(recent) < 2:
+            return False
+        price = float(recent["Close"].iloc[-1])
+        if price <= 0:
+            return False
+        rng = float(recent["High"].max()) - float(recent["Low"].min())
+        return (rng / price) < threshold
+    except Exception:
+        return False
+
+
 def check_pattern(df):
     if df is None or len(df) < 2:
         return False
@@ -362,7 +388,7 @@ def send_telegram_photo(image_path, caption):
 # is what gives the signals a memory across runs.
 SIGNALS_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signals.csv")
 SIGNAL_FIELDS = [
-    "signal_id", "alert_date", "candle_date", "kind", "ticker",
+    "signal_id", "bot", "alert_date", "candle_date", "kind", "ticker",
     "timeframe", "entry_close", "stop_level",
 ]
 
@@ -379,10 +405,47 @@ def _existing_signal_ids():
     return ids
 
 
-def log_signal(kind, ticker, timeframe, df):
+def _infer_bot(kind, timeframe):
+    """Best guess at which bot produced an old row that predates the `bot` column,
+    from its kind + timeframe. Stock cap tiers are indistinguishable, so unknown."""
+    tf = (timeframe or "").upper()
+    if kind == "CRYPTO":
+        if tf in {"6H", "8H", "12H", "1D", "2D", "3D", "4D"}:
+            return "crypto_intraday"
+        if tf in {"1W", "1M"}:
+            return "crypto_wm"
+    return "unknown"
+
+
+def _migrate_signals_schema():
+    """Keep signals.csv on the current column set. If an older file is missing
+    newer columns (e.g. it predates `bot`), rewrite it with the full header --
+    back-filling `bot` where it can be inferred -- so appended rows stay aligned
+    instead of silently shifting into the wrong columns."""
+    if not os.path.exists(SIGNALS_CSV):
+        return
+    with open(SIGNALS_CSV, newline="") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames == SIGNAL_FIELDS:
+            return  # already current -- nothing to do
+        rows = list(reader)
+    for r in rows:
+        if not r.get("bot"):
+            r["bot"] = _infer_bot(r.get("kind", ""), r.get("timeframe", ""))
+    with open(SIGNALS_CSV, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=SIGNAL_FIELDS)
+        w.writeheader()
+        for r in rows:
+            w.writerow({k: r.get(k, "") for k in SIGNAL_FIELDS})
+    print("  (migrated signals.csv to the current column layout)")
+
+
+def log_signal(kind, ticker, timeframe, df, bot="scan_all"):
     """Record one match in signals.csv: its entry (close) price and the candle it
-    formed in, keyed by a unique signal_id. Re-logging the same candle is a no-op,
-    so re-runs and overlapping schedules can't create duplicates."""
+    formed in, keyed by a unique signal_id. `bot` names which of the scanners
+    found it (e.g. stock_mega, crypto_intraday) so per-bot totals can be tallied.
+    Re-logging the same candle is a no-op, so re-runs and overlapping schedules
+    can't create duplicates."""
     try:
         candle_date = pd.Timestamp(df.index[-1]).date().isoformat()
         entry_close = float(df["Close"].iloc[-1])
@@ -394,6 +457,7 @@ def log_signal(kind, ticker, timeframe, df):
         print(f"    (could not log signal for {ticker}: {e})")
         return
     signal_id = f"{kind}_{ticker}_{timeframe}_{candle_date}"
+    _migrate_signals_schema()   # align an older file before we append to it
     if signal_id in _existing_signal_ids():
         return
     new_file = not os.path.exists(SIGNALS_CSV)
@@ -403,6 +467,7 @@ def log_signal(kind, ticker, timeframe, df):
             w.writeheader()
         w.writerow({
             "signal_id": signal_id,
+            "bot": bot,
             "alert_date": datetime.datetime.now(datetime.timezone.utc).date().isoformat(),
             "candle_date": candle_date,
             "kind": kind,
@@ -461,6 +526,8 @@ def scan(tickers, label, interval, period, closed_only=False):
                 if df.empty:
                     continue
                 scanned += 1
+                if is_flat(df):
+                    continue          # pegged stablecoin -- noise, skip it
                 if check_pattern(df):
                     matches.append((t, df.copy()))
             except (KeyError, IndexError):
