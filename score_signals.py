@@ -12,20 +12,20 @@ The short horizons judge the fast intraday bots; the long ones (30d-180d) judge
 the weekly and monthly bots. A horizon column stays blank until that much time
 has actually passed, then fills in and never changes (historical closes are final).
 
-The VERDICT for each signal is a take-profit vs stop-loss race:
+The VERDICT for each signal uses a TRAILING take-profit vs a stop-loss:
 
     - Take-profit targets sit every +10% above entry (+10%, +20%, +30%, ...).
     - The stop is the lowest low of the two pattern candles (stop_level).
-    - Walking forward day by day, whichever is hit first decides the outcome:
-        took_profit  -- reached the first +10% target before the stop  (win)
-        stopped_out  -- hit the stop first                             (loss)
-        open         -- neither hit yet
-        pending      -- not enough price history after the candle yet
-    - best_target_pct records the highest +10% rung price reached, so a runner
-      that hit +120% before stopping is captured.
+    - Before any profit, the stop protects the trade. Once price reaches the
+      first +10% rung it rides up, then exits when price pulls back 10% below its
+      highest rung -- banking (peak rung - 10%) as realized_pct. E.g. a peak of
+      +60% that pulls back to +50% exits with +50% locked in.
+    - Outcomes: took_profit (win), stopped_out (loss), open (still running),
+      pending (no price history after the candle yet). best_target_pct records
+      the highest rung reached, so a +120% runner is captured.
 
-It writes results.csv (per-signal detail) and summary.csv (per-bot totals +
-win-rate), and prints a win-rate summary per timeframe.
+It writes results.csv (per-signal detail) and summary.csv (per-bot totals,
+win-rate, and average win size), and prints a win-rate summary per timeframe.
 
 Run it on a daily schedule. It rebuilds results.csv from scratch each time, so
 it is safe to run as often as you like -- no state of its own to corrupt.
@@ -47,12 +47,15 @@ RESULTS_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results.
 SUMMARY_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "summary.csv")
 
 SUMMARY_FIELDS = ["bot", "total_signals", "scored", "took_profit",
-                  "stopped_out", "open", "win_rate_pct"]
+                  "stopped_out", "open", "win_rate_pct", "avg_win_pct"]
 
-# Take-profit ladder: targets sit every TP_STEP percent above entry (+10%, +20%,
-# +30%, ...). There's no fixed ceiling -- we just record the highest rung price
-# actually reached, so a runner that hits +120% is captured.
+# Take-profit ladder + trailing exit. Targets sit every TP_STEP percent above
+# entry (+10%, +20%, ...). Once price reaches the first rung the trade rides up,
+# and exits when price pulls back TRAIL_PCT from its highest rung -- banking
+# (peak rung - TRAIL_PCT). Example: peaks at +60%, drops to +50% -> exit, +50%
+# locked in. There's no ceiling on how high the peak can climb.
 TP_STEP = 10        # percent between take-profit rungs
+TRAIL_PCT = 10      # pull-back from the peak rung that triggers the exit
 
 # (column suffix, days after the candle close) -- a separate, purely informational
 # lens: where price sat at each age, regardless of the TP/stop verdict.
@@ -62,8 +65,8 @@ RESULT_FIELDS = (
     ["signal_id", "bot", "alert_date", "candle_date", "kind", "ticker",
      "timeframe", "entry_close", "stop_level"]
     + [f"chg_{name}" for name, _ in HORIZONS]
-    + ["last_chg", "best_target_pct", "tp_date", "stop_date", "stop_chg",
-       "result", "status"]
+    + ["last_chg", "best_target_pct", "realized_pct", "tp_date", "exit_date",
+       "stop_date", "stop_chg", "result", "status"]
 )
 
 
@@ -102,60 +105,73 @@ def close_on_or_after(hist, target_date):
 
 
 def evaluate_trade(hist, candle_date, entry, stop_level):
-    """Walk the daily bars after the signal and decide the outcome:
+    """Walk the daily bars after the signal and decide the outcome with a TRAILING
+    take-profit:
 
-        take_profit  -- price reached the first +TP_STEP% target before the stop
-        stopped_out  -- price hit the stop (the pattern low) first
-        open         -- has run for a while but hit neither yet
+      - Before any profit, the pattern-low stop protects the trade.
+      - Once price reaches the first +TP_STEP% rung, the trade rides up; it exits
+        when price pulls back TRAIL_PCT below its highest rung, banking
+        (peak rung - TRAIL_PCT) as realized_pct.
+
+    Outcomes:
+        took_profit  -- exited via the trailing target  (win, see realized_pct)
+        stopped_out  -- hit the pattern low before ever reaching +TP_STEP%  (loss)
+        open         -- in profit and still running (or running, neither hit)
         pending      -- not enough price history after the candle yet
 
-    Also records best_target_pct (highest +10% rung price reached while the trade
-    was live) and the dates. Same-day ties (a bar whose high hits a target AND
-    whose low hits the stop) are scored conservatively as stopped_out, since daily
-    bars can't tell us which came first.
+    Daily-bar convention: the trailing exit is only checked on bars AFTER the one
+    that set a new peak (we can't know the intra-day order of a bar's own high and
+    low), so a single spiky bar never stops itself out at break-even.
     """
-    blank = {"result": "pending", "status": "pending", "tp_date": "",
-             "stop_date": "", "stop_chg": "", "best_target_pct": ""}
+    blank = {"result": "pending", "status": "pending", "best_target_pct": "",
+             "realized_pct": "", "tp_date": "", "exit_date": "",
+             "stop_date": "", "stop_chg": ""}
     if hist is None or entry <= 0:
         return blank
     after = hist.loc[[d.date() > candle_date for d in hist.index]]
     if after.empty:
         return blank
 
-    # First day the stop is breached (low trades down to the pattern low).
-    stop_dt = None
-    if stop_level:
-        breached = after.loc[after["Low"] <= stop_level]
-        if not breached.empty:
-            stop_dt = breached.index[0].date()
+    peak_rung = 0          # highest +10% rung reached so far
+    tp_date = ""           # first day price reached +TP_STEP%
+    activated = False      # has the trade reached the first rung yet?
 
-    # Window the trade was live: every bar strictly before the stop day (so a
-    # same-day target doesn't count -- the conservative tie-break above).
-    live = after.loc[[d.date() < stop_dt for d in after.index]] if stop_dt else after
+    for ts, bar in after.iterrows():
+        day = ts.date()
+        hi_pct = (float(bar["High"]) - entry) / entry * 100
+        low = float(bar["Low"])
 
-    best_pct, tp_date = 0, ""
-    if not live.empty:
-        gains = (live["High"] - entry) / entry * 100
-        reached = gains[gains >= TP_STEP]
-        if not reached.empty:
-            best_pct = int(reached.max() // TP_STEP) * TP_STEP   # floor to a rung
-            tp_date = reached.index[0].date().isoformat()        # first +10% hit
+        if activated:
+            # Trailing exit, measured against the peak as it stood BEFORE this bar.
+            trail_pct = peak_rung - TRAIL_PCT
+            trail_price = entry * (1 + trail_pct / 100)
+            if low <= trail_price:
+                return {"result": "took_profit", "status": "took_profit",
+                        "best_target_pct": peak_rung, "realized_pct": trail_pct,
+                        "tp_date": tp_date, "exit_date": day.isoformat(),
+                        "stop_date": "", "stop_chg": ""}
+        elif stop_level and low <= stop_level:
+            # Not in profit yet and the pattern low gave way -> a clean loss.
+            return {"result": "stopped_out", "status": "stopped_out",
+                    "best_target_pct": 0, "realized_pct": "",
+                    "tp_date": "", "exit_date": "",
+                    "stop_date": day.isoformat(),
+                    "stop_chg": f"{(stop_level - entry) / entry * 100:+.2f}"}
 
-    if tp_date:
-        result = "took_profit"
-    elif stop_dt:
-        result = "stopped_out"
-    else:
-        result = "open"
-    return {
-        "result": result,
-        "status": result,
-        "tp_date": tp_date,
-        "stop_date": stop_dt.isoformat() if stop_dt else "",
-        "stop_chg": (f"{(stop_level - entry) / entry * 100:+.2f}"
-                     if stop_dt else ""),
-        "best_target_pct": best_pct,
-    }
+        # Update the peak from this bar's high (after the exit checks above).
+        if hi_pct >= TP_STEP:
+            rung = int(hi_pct // TP_STEP) * TP_STEP
+            if rung > peak_rung:
+                peak_rung = rung
+            if not activated:
+                activated = True
+                tp_date = day.isoformat()
+
+    # Ran out of history without an exit: still open.
+    return {"result": "open", "status": "open",
+            "best_target_pct": peak_rung if activated else 0,
+            "realized_pct": "", "tp_date": tp_date, "exit_date": "",
+            "stop_date": "", "stop_chg": ""}
 
 
 def score_one(row, hist):
@@ -213,11 +229,15 @@ def build_summary(results):
         bot = r.get("bot") or "unknown"
         agg = by_bot.setdefault(
             bot, {"total_signals": 0, "took_profit": 0,
-                  "stopped_out": 0, "open": 0})
+                  "stopped_out": 0, "open": 0, "win_pct_sum": 0.0})
         agg["total_signals"] += 1
         res = r["result"]
         if res == "took_profit":
             agg["took_profit"] += 1
+            try:
+                agg["win_pct_sum"] += float(r.get("realized_pct") or 0)
+            except ValueError:
+                pass
         elif res == "stopped_out":
             agg["stopped_out"] += 1
         else:                       # open or pending
@@ -228,6 +248,7 @@ def build_summary(results):
         a = by_bot[bot]
         scored = a["took_profit"] + a["stopped_out"]
         rate = 100 * a["took_profit"] / scored if scored else 0
+        avg_win = a["win_pct_sum"] / a["took_profit"] if a["took_profit"] else 0
         rows.append({
             "bot": bot,
             "total_signals": a["total_signals"],
@@ -236,6 +257,7 @@ def build_summary(results):
             "stopped_out": a["stopped_out"],
             "open": a["open"],
             "win_rate_pct": f"{rate:.0f}",
+            "avg_win_pct": f"{avg_win:.0f}",
         })
     return rows
 
