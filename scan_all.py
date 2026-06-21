@@ -159,14 +159,22 @@ def _liquidity_grab(df, bullish):
             return False
 
     def clears(idxs):
-        """True if the trigger sweeps past, and closes across, every ref candle."""
+        """True if the trigger sweeps past, and closes across, every ref candle.
+        Every reference candle must also share the trigger's colour, so the whole
+        pattern is one colour: all green (long) or all red (short)."""
+        opens = [df["Open"].iloc[i] for i in idxs]
         highs = [df["High"].iloc[i] for i in idxs]
         lows = [df["Low"].iloc[i] for i in idxs]
         closes = [df["Close"].iloc[i] for i in idxs]
-        if pd.isna(closes).any():
+        if pd.isna(opens).any() or pd.isna(closes).any():
             return False
+        # Same-colour requirement on the lead-in candle(s).
         if bullish:
+            if not all(rc > ro for ro, rc in zip(opens, closes)):
+                return False
             return l < min(lows) and c > max(closes)
+        if not all(rc < ro for ro, rc in zip(opens, closes)):
+            return False
         return h > max(highs) and c < min(closes)
 
     # Fire on EITHER form: the trigger clears just the candle before it (2-candle),
