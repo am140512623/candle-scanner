@@ -24,11 +24,21 @@ File Explorer when the run finishes.
     python scan_now.py stock_mid  # pick by name too, if you prefer
     python scan_now.py --no-intraday   # all bots except the heavy crypto_intraday
 
-Menu numbering:
+Pick crypto_intraday (7) and it ALSO asks which frame (6H..4D); you can answer
+on the command line too:
+    python scan_now.py 7 1        # crypto_intraday, frame #1 (6H)
+    python scan_now.py 7 12H      # crypto_intraday, the 12H frame
+    python scan_now.py 7 0        # crypto_intraday, all frames
+
+Menu numbering (type):
     0 = ALL    1 = stock_mega   2 = stock_large   3 = stock_mid
     4 = stock_small   5 = crypto_top1000   6 = crypto_wm   7 = crypto_intraday
+Frame numbering (crypto_intraday only):
+    0 = ALL    1 = 6H   2 = 8H   3 = 12H   4 = 1D   5 = 2D   6 = 3D   7 = 4D
 
-The same swallow pattern as the live bots is used (imported from scan_all).
+Charts land in charts/<type>[_<frame>]_<timestamp>/<FRAME>_<date>/ -- the folder
+references the type and the frame, like the old pre-bot version. The same swallow
+pattern as the live bots is used (imported from scan_all). No CSV, no Telegram.
 """
 
 import argparse
@@ -101,11 +111,11 @@ def scan_crypto_wm():
     return scan_crypto_frames(universe, cr.WM_FRAMES)
 
 
-def scan_crypto_intraday():
-    """The crypto_intraday bot: top 300 on the 6H..4D frames."""
+def scan_crypto_intraday(frames=None):
+    """The crypto_intraday bot: top 300 on the 6H..4D frames (all, or a subset)."""
     universe = s.get_top_crypto(cr.CRYPTO_TOP_N)
     print(f"    Crypto top {cr.CRYPTO_TOP_N}: {len(universe)} coins")
-    return scan_crypto_frames(universe, cr.INTRADAY_FRAMES)
+    return scan_crypto_frames(universe, frames or cr.INTRADAY_FRAMES)
 
 
 # Each bot name -> the function that scans exactly what that scheduled bot scans.
@@ -155,6 +165,44 @@ def resolve_choice(raw):
     return None
 
 
+# crypto_intraday frames, in menu order (1..7). Number 0 = ALL of them.
+INTRADAY_LABELS = [tf["label"] for tf in cr.INTRADAY_FRAMES]   # 6H,8H,12H,1D,2D,3D,4D
+
+
+def choose_intraday_frames(raw=None):
+    """Pick which crypto_intraday timeframe(s) to scan. Shows a menu if `raw` is
+    None; accepts a number (1..7), 'all'/0, or a label like '6H'. Returns the
+    list of frame dicts to scan."""
+    if raw is None:
+        print("\nWhich timeframe for crypto_intraday?\n")
+        print("   0) ALL frames")
+        for i, lbl in enumerate(INTRADAY_LABELS, 1):
+            print(f"   {i}) {lbl}")
+        raw = input("\nEnter number: ")
+    raw = (raw or "").strip().lower()
+    if raw in ("0", "all", ""):
+        return cr.INTRADAY_FRAMES
+    if raw.isdigit() and 1 <= int(raw) <= len(INTRADAY_LABELS):
+        want = {INTRADAY_LABELS[int(raw) - 1]}
+    else:
+        want = {x.strip().upper() for x in raw.split(",") if x.strip()}
+    chosen = [tf for tf in cr.INTRADAY_FRAMES if tf["label"] in want]
+    return chosen or cr.INTRADAY_FRAMES
+
+
+def run_folder_name(todo, intraday_frames):
+    """Name the output folder after the type (and frame, for a single intraday
+    frame) so it's easy to tell runs apart -- e.g. crypto_intraday_6H, stock_mid."""
+    if todo == list(ORDER):
+        return "ALL"
+    if len(todo) == 1:
+        name = todo[0]
+        if name == "crypto_intraday" and len(intraday_frames) == 1:
+            name += "_" + intraday_frames[0]["label"]
+        return name
+    return "_".join(todo)
+
+
 def draw(matches):
     """Save a chart PNG for every match and print where each landed."""
     for kind, t, df, tf_label, direction in matches:
@@ -173,6 +221,9 @@ def main():
     parser.add_argument("choice", nargs="?",
                         help="bot number 1-7, a bot name, or 0/all. "
                              "Omit to get the numbered menu.")
+    parser.add_argument("frame", nargs="?",
+                        help="for crypto_intraday only: frame number 1-7, a label "
+                             "like 6H, or 0/all. Omit to get the frame menu.")
     parser.add_argument("--no-intraday", action="store_true",
                         help="when running all bots, skip the heavy crypto_intraday bot")
     args = parser.parse_args()
@@ -189,20 +240,31 @@ def main():
     if args.no_intraday and len(todo) > 1 and "crypto_intraday" in todo:
         todo.remove("crypto_intraday")
 
-    # Save every chart from this run into one fresh, timestamped folder so each
-    # manual run is self-contained. save_chart() writes under s.CHART_DIR.
+    # If we're running ONLY crypto_intraday, also ask which timeframe(s).
+    intraday_frames = cr.INTRADAY_FRAMES
+    if todo == ["crypto_intraday"]:
+        intraday_frames = choose_intraday_frames(args.frame)
+
+    # Save every chart from this run into one fresh folder, named after the type
+    # (and frame) + a timestamp. save_chart() writes its own TF_date subfolders
+    # under s.CHART_DIR, so the final path references both the type and the frame.
     stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    run_dir = os.path.join(s.CHART_DIR, f"scan_{stamp}")
+    run_dir = os.path.join(s.CHART_DIR, f"{run_folder_name(todo, intraday_frames)}_{stamp}")
     os.makedirs(run_dir, exist_ok=True)
     s.CHART_DIR = run_dir
 
     print(f"\nScanning bot(s): {', '.join(todo)}")
+    if todo == ["crypto_intraday"]:
+        print(f"Frames: {', '.join(tf['label'] for tf in intraday_frames)}")
     print("(this can take several minutes for the full universe)\n")
 
     matches = []
     for name in todo:
         print(f"=== {name} ===")
-        matches += BOTS[name]()
+        if name == "crypto_intraday":
+            matches += scan_crypto_intraday(intraday_frames)
+        else:
+            matches += BOTS[name]()
         print()
 
     print("=" * 40)
