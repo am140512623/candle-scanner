@@ -210,6 +210,7 @@ def run(crypto, catalog=INTRADAY_FRAMES, bot="crypto_intraday"):
         print(f"\nDownloading {b} candles...")
         bases[b] = download_base(crypto, b, BASE_PERIODS[b])
         print(f"  got data for {len(bases[b])}/{len(crypto)} coins")
+        bases[b] = s.dedupe_crypto(bases[b])   # drop wrapped/bridged clones
 
     total = 0
     for tf in frames:
