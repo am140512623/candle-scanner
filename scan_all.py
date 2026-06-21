@@ -126,14 +126,17 @@ def is_flat(df, lookback=FLAT_LOOKBACK, threshold=FLAT_THRESHOLD):
         return False
 
 
-# Shared engine for both patterns: a pure ENGULFING ("swallow"). The trigger
-# (last, newest candle) has to completely swallow the reference candle(s) before
-# it -- its full range, body AND wicks, covers theirs -- and every candle in the
-# pattern shares the trigger's colour. There's NO body-vs-wick shape rule, no
-# close comparison, and no liquidity sweep: just one candle eating the prior one.
+# Shared engine for both patterns: an ENGULFING ("swallow"). The trigger (last,
+# newest candle) has to swallow the reference candle(s) before it -- its body
+# covers their body, and its range runs PAST them on the trade's side -- and every
+# candle in the pattern shares the trigger's colour. The reference's opposite wick
+# may stick out: there's NO body-vs-wick shape rule, no close comparison, and no
+# liquidity sweep.
 #
-#   bullish -> all green, the trigger swallows the prior green candle(s)
-#   bearish -> all red,   the trigger swallows the prior red candle(s)
+#   bullish -> all green; the trigger's body covers the prior body and its low
+#              runs BELOW the prior low. The prior UPPER wick may poke above.
+#   bearish -> all red;   the trigger's body covers the prior body and its high
+#              runs ABOVE the prior high. The prior LOWER wick may poke below.
 #
 # It fires on EITHER layout (whichever holds):
 #   2-candle: c2 swallows c1.
@@ -155,25 +158,33 @@ def _swallow(df, bullish):
         if not c < o:
             return False
 
+    body_top, body_bottom = max(o, c), min(o, c)
+
     def swallows(idxs):
-        """True if the trigger fully engulfs every reference candle -- high above
-        their highs, low below their lows -- and they all share the trigger's
-        colour (so the whole pattern is one colour: all green or all red)."""
+        """True if the trigger swallows every reference candle and they all share
+        the trigger's colour. 'Swallow' = the trigger's body covers each reference
+        body, and the trigger runs past them on the trade's side: below their low
+        for a long, above their high for a short. The reference's opposite wick
+        (upper for a long, lower for a short) may stick out past the trigger."""
         opens = [df["Open"].iloc[i] for i in idxs]
         highs = [df["High"].iloc[i] for i in idxs]
         lows = [df["Low"].iloc[i] for i in idxs]
         closes = [df["Close"].iloc[i] for i in idxs]
         if pd.isna(opens).any() or pd.isna(closes).any():
             return False
-        # Same-colour requirement on the reference candle(s).
+        ref_body_tops = [max(ro, rc) for ro, rc in zip(opens, closes)]
+        ref_body_bottoms = [min(ro, rc) for ro, rc in zip(opens, closes)]
         if bullish:
             if not all(rc > ro for ro, rc in zip(opens, closes)):
                 return False
-        else:
-            if not all(rc < ro for ro, rc in zip(opens, closes)):
-                return False
-        # The trigger's full range swallows every reference candle's full range.
-        return h >= max(highs) and l <= min(lows)
+            # Body covers the reference body top; low runs below the reference low.
+            # The reference upper wick may poke above the trigger.
+            return body_top >= max(ref_body_tops) and l <= min(lows)
+        if not all(rc < ro for ro, rc in zip(opens, closes)):
+            return False
+        # Body covers the reference body bottom; high runs above the reference high.
+        # The reference lower wick may poke below the trigger.
+        return body_bottom <= min(ref_body_bottoms) and h >= max(highs)
 
     # Fire on EITHER form: the trigger swallows just the candle before it
     # (2-candle), or it swallows the wider two-candle block (3-candle).
