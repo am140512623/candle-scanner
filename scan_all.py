@@ -126,22 +126,22 @@ def is_flat(df, lookback=FLAT_LOOKBACK, threshold=FLAT_THRESHOLD):
         return False
 
 
-# Shared engine for both patterns. There's NO shape requirement on the lead-in
-# candle(s) -- only the trigger (the last, newest candle) has to qualify: it must
-# be a decisive candle of the right colour whose wick sweeps PAST the reference
-# candle(s) and whose close lands across their close(s).
+# Shared engine for both patterns: an ENGULFING ("swallow"). The trigger (last,
+# newest candle) has to swallow the reference candle(s) before it -- its body
+# covers their body, and its range runs PAST them on the trade's side -- and every
+# candle in the pattern shares the trigger's colour. The reference's opposite wick
+# may stick out: there's NO body-vs-wick shape rule, no close comparison, and no
+# liquidity sweep.
 #
-#   bullish -> green, strong close near its high, low sweeps BELOW the reference
-#              low(s), close ABOVE the reference close(s)
-#   bearish -> red,   strong close near its low,  high sweeps ABOVE the reference
-#              high(s), close BELOW the reference close(s)
+#   bullish -> all green; the trigger's body covers the prior body and its low
+#              runs BELOW the prior low. The prior UPPER wick may poke above.
+#   bearish -> all red;   the trigger's body covers the prior body and its high
+#              runs ABOVE the prior high. The prior LOWER wick may poke below.
 #
 # It fires on EITHER layout (whichever holds):
-#   2-candle: the trigger clears just the single candle right before it -- sweeps
-#             past its extreme and closes across its close.
-#   3-candle: the trigger clears the wider two-candle consolidation block --
-#             sweeps past BOTH extremes and closes past BOTH closes.
-def _liquidity_grab(df, bullish):
+#   2-candle: c2 swallows c1.
+#   3-candle: c3 swallows both c1 and c2.
+def _swallow(df, bullish):
     if df is None or len(df) < 2:
         return False
 
@@ -150,51 +150,60 @@ def _liquidity_grab(df, bullish):
     if pd.isna([o, c]).any():
         return False
 
-    # The trigger candle: right colour + a decisive close (body beats the tail).
+    # The trigger candle just needs the right colour -- no shape rule.
     if bullish:
-        if not (c > o and (c - o) > (h - c)):
+        if not c > o:
             return False
     else:
-        if not (c < o and (o - c) > (c - l)):
+        if not c < o:
             return False
 
-    def clears(idxs):
-        """True if the trigger sweeps past, and closes across, every ref candle.
-        Every reference candle must also share the trigger's colour, so the whole
-        pattern is one colour: all green (long) or all red (short)."""
+    body_top, body_bottom = max(o, c), min(o, c)
+
+    def swallows(idxs):
+        """True if the trigger swallows every reference candle and they all share
+        the trigger's colour. 'Swallow' = the trigger's body covers each reference
+        body, and the trigger runs past them on the trade's side: below their low
+        for a long, above their high for a short. The reference's opposite wick
+        (upper for a long, lower for a short) may stick out past the trigger."""
         opens = [df["Open"].iloc[i] for i in idxs]
         highs = [df["High"].iloc[i] for i in idxs]
         lows = [df["Low"].iloc[i] for i in idxs]
         closes = [df["Close"].iloc[i] for i in idxs]
         if pd.isna(opens).any() or pd.isna(closes).any():
             return False
-        # Same-colour requirement on the lead-in candle(s).
+        ref_body_tops = [max(ro, rc) for ro, rc in zip(opens, closes)]
+        ref_body_bottoms = [min(ro, rc) for ro, rc in zip(opens, closes)]
         if bullish:
             if not all(rc > ro for ro, rc in zip(opens, closes)):
                 return False
-            return l < min(lows) and c > max(closes)
+            # Body covers the reference body top; low runs below the reference low.
+            # The reference upper wick may poke above the trigger.
+            return body_top >= max(ref_body_tops) and l <= min(lows)
         if not all(rc < ro for ro, rc in zip(opens, closes)):
             return False
-        return h > max(highs) and c < min(closes)
+        # Body covers the reference body bottom; high runs above the reference high.
+        # The reference lower wick may poke below the trigger.
+        return body_bottom <= min(ref_body_bottoms) and h >= max(highs)
 
-    # Fire on EITHER form: the trigger clears just the candle before it (2-candle),
-    # or it clears the wider two-candle block (3-candle).
-    if clears([-2]):
+    # Fire on EITHER form: the trigger swallows just the candle before it
+    # (2-candle), or it swallows the wider two-candle block (3-candle).
+    if swallows([-2]):
         return True
-    if len(df) >= 3 and clears([-3, -2]):
+    if len(df) >= 3 and swallows([-3, -2]):
         return True
     return False
 
 
 def check_pattern(df):
-    return _liquidity_grab(df, bullish=True)
+    return _swallow(df, bullish=True)
 
 
 # ---------------------------------------------------------------------------
 # THE BEARISH MIRROR (short setups)
 # ---------------------------------------------------------------------------
 def check_pattern_bearish(df):
-    return _liquidity_grab(df, bullish=False)
+    return _swallow(df, bullish=False)
 
 
 def pattern_name(direction):
