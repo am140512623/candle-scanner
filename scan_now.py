@@ -18,9 +18,15 @@ each ticker's most recent CLOSED candle. Every match is saved as a candlestick
 PNG into a fresh, timestamped folder under the charts/ directory, which opens in
 File Explorer when the run finishes.
 
-    python scan_now.py                      # every bot (slow)
-    python scan_now.py --bot stock_mid      # just one bot
-    python scan_now.py --no-intraday        # every bot except crypto_intraday
+    python scan_now.py            # show a numbered menu, type a number to pick
+    python scan_now.py 3          # run bot #3 straight away (no menu)
+    python scan_now.py 0          # run ALL bots
+    python scan_now.py stock_mid  # pick by name too, if you prefer
+    python scan_now.py --no-intraday   # all bots except the heavy crypto_intraday
+
+Menu numbering:
+    0 = ALL    1 = stock_mega   2 = stock_large   3 = stock_mid
+    4 = stock_small   5 = crypto_top1000   6 = crypto_wm   7 = crypto_intraday
 
 The same swallow pattern as the live bots is used (imported from scan_all).
 """
@@ -113,6 +119,41 @@ BOTS = {
     "crypto_intraday": scan_crypto_intraday,
 }
 
+# The order the bots show up in the numbered menu (1..7). Number 0 = ALL.
+ORDER = ["stock_mega", "stock_large", "stock_mid", "stock_small",
+         "crypto_top1000", "crypto_wm", "crypto_intraday"]
+LABELS = {
+    "stock_mega":      "Mega-Cap stocks (>$200B)        weekly+monthly",
+    "stock_large":     "Large-Cap stocks ($10B-$200B)   weekly+monthly",
+    "stock_mid":       "Mid-Cap stocks ($2B-$10B)       weekly+monthly",
+    "stock_small":     "Small-Cap stocks ($250M-$2B)    weekly+monthly",
+    "crypto_top1000":  "Crypto rank 300-1000            weekly+monthly",
+    "crypto_wm":       "Crypto top 300                  weekly+monthly",
+    "crypto_intraday": "Crypto top 300                  6H,8H,12H,1D,2D,3D,4D",
+}
+
+
+def print_menu():
+    """Show the numbered list of bots to pick from."""
+    print("Which bot do you want to scan?\n")
+    print("   0) ALL bots")
+    for i, key in enumerate(ORDER, 1):
+        print(f"   {i}) {key:<16}{LABELS[key]}")
+    print()
+
+
+def resolve_choice(raw):
+    """Turn a menu answer (a number, 'all', or a bot name) into a list of bot
+    keys to run, or None if it isn't recognised."""
+    raw = (raw or "").strip().lower()
+    if raw in ("0", "all"):
+        return list(ORDER)
+    if raw.isdigit() and 1 <= int(raw) <= len(ORDER):
+        return [ORDER[int(raw) - 1]]
+    if raw in BOTS:
+        return [raw]
+    return None
+
 
 def draw(matches):
     """Save a chart PNG for every match and print where each landed."""
@@ -129,11 +170,24 @@ def draw(matches):
 def main():
     parser = argparse.ArgumentParser(
         description="Manual pattern scan -> chart PNGs (one bot or all of them)")
-    parser.add_argument("--bot", choices=list(BOTS),
-                        help="run just one bot (default: all of them)")
+    parser.add_argument("choice", nargs="?",
+                        help="bot number 1-7, a bot name, or 0/all. "
+                             "Omit to get the numbered menu.")
     parser.add_argument("--no-intraday", action="store_true",
                         help="when running all bots, skip the heavy crypto_intraday bot")
     args = parser.parse_args()
+
+    # No choice on the command line -> show the menu and ask for a number.
+    raw = args.choice
+    if raw is None:
+        print_menu()
+        raw = input("Enter number: ")
+
+    todo = resolve_choice(raw)
+    if todo is None:
+        raise SystemExit(f"Unknown choice {raw!r}. Pick 0-{len(ORDER)} or a bot name.")
+    if args.no_intraday and len(todo) > 1 and "crypto_intraday" in todo:
+        todo.remove("crypto_intraday")
 
     # Save every chart from this run into one fresh, timestamped folder so each
     # manual run is self-contained. save_chart() writes under s.CHART_DIR.
@@ -142,14 +196,7 @@ def main():
     os.makedirs(run_dir, exist_ok=True)
     s.CHART_DIR = run_dir
 
-    if args.bot:
-        todo = [args.bot]
-    else:
-        todo = list(BOTS)
-        if args.no_intraday:
-            todo.remove("crypto_intraday")
-
-    print(f"Scanning bot(s): {', '.join(todo)}")
+    print(f"\nScanning bot(s): {', '.join(todo)}")
     print("(this can take several minutes for the full universe)\n")
 
     matches = []
