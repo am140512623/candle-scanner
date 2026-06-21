@@ -60,6 +60,7 @@ def scan_crypto_frames(crypto, frames):
         print(f"    downloading {b} candles for {len(crypto)} coins...")
         bases[b] = cr.download_base(crypto, b, cr.BASE_PERIODS[b])
         print(f"      got data for {len(bases[b])}/{len(crypto)} coins")
+        bases[b] = s.dedupe_crypto(bases[b])   # drop wrapped/bridged clones
 
     out = []
     for tf in frames:

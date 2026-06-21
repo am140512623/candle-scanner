@@ -21,6 +21,7 @@ from email.message import EmailMessage
 import matplotlib
 matplotlib.use("Agg")  # no GUI needed, just save files
 import mplfinance as mpf
+import numpy as np
 import pandas as pd
 import requests
 import yfinance as yf
@@ -580,33 +581,83 @@ def save_chart(ticker, kind, df, timeframe="WEEKLY", bars=40, direction="long"):
 
 
 # ---------------------------------------------------------------------------
+# DEDUPE -- drop wrapped/bridged crypto clones
+# ---------------------------------------------------------------------------
+# Yahoo's crypto universe carries many tokens that just mirror another coin's
+# price 1:1 -- wrapped/bridged Bitcoin (WBTC, FBTC, BTCB, tBTC, ...), wrapped ETH,
+# etc. They form the SAME pattern at the same time as the real coin, so we'd alert
+# on the same move many times over. We drop a coin when its recent % price action
+# is essentially identical to a higher-ranked coin we've already kept. The
+# tolerance is deliberately TINY, so only near-perfect mirrors are dropped --
+# staked derivatives that drift (stETH, rETH, ...) are kept.
+DEDUPE_LOOKBACK = 30      # candles of price action used as the fingerprint
+DEDUPE_TOL = 2e-4         # max per-candle return gap to count as the same asset
+
+
+def _return_signature(df, lookback=DEDUPE_LOOKBACK):
+    """Vector of recent close-to-close % changes -- a price-action fingerprint.
+    Returns None if there isn't enough clean history to compare."""
+    closes = df["Close"].tail(lookback + 1).to_numpy(dtype=float)
+    if len(closes) < lookback + 1 or (closes[:-1] == 0).any() or np.isnan(closes).any():
+        return None
+    return closes[1:] / closes[:-1] - 1.0
+
+
+def dedupe_crypto(data, lookback=DEDUPE_LOOKBACK, tol=DEDUPE_TOL):
+    """Drop wrapped/bridged clones from a {ticker: DataFrame} map. Iteration order
+    is rank order, so the canonical coin (e.g. BTC-USD) is kept and its mirrors
+    (WBTC, FBTC, BTCB, ...) are dropped. Returns the filtered map."""
+    kept, sigs, dropped = {}, [], []
+    for t, df in data.items():
+        sig = _return_signature(df, lookback)
+        if sig is not None:
+            twin = next((kt for kt, ks in sigs
+                         if len(ks) == len(sig) and np.max(np.abs(ks - sig)) <= tol), None)
+            if twin is not None:
+                dropped.append(f"{t}~{twin}")
+                continue
+            sigs.append((t, sig))
+        kept[t] = df
+    if dropped:
+        shown = ", ".join(dropped[:8]) + (f" (+{len(dropped) - 8} more)" if len(dropped) > 8 else "")
+        print(f"  deduped {len(dropped)} crypto clone(s): {shown}")
+    return kept
+
+
+# ---------------------------------------------------------------------------
 # SCAN
 # ---------------------------------------------------------------------------
-def scan(tickers, label, interval, period, closed_only=False):
-    matches, scanned = [], 0
+def scan(tickers, label, interval, period, closed_only=False, dedupe=False):
+    # Download + clean every ticker first, so we can optionally dedupe the whole
+    # set (drop wrapped/bridged crypto clones) before pattern-checking.
+    data = {}
     for batch in chunked(tickers, BATCH_SIZE):
-        data = yf.download(batch, period=period, interval=interval,
-                           group_by="ticker", auto_adjust=True,
-                           threads=True, progress=False)
+        raw = yf.download(batch, period=period, interval=interval,
+                          group_by="ticker", auto_adjust=True,
+                          threads=True, progress=False)
         for t in batch:
             try:
-                df = data[t] if len(batch) > 1 else data
+                df = raw[t] if len(batch) > 1 else raw
                 df = df.dropna()
                 if closed_only and len(df) > 0:
                     df = df.iloc[:-1]   # drop the still-forming candle
-                if df.empty:
-                    continue
-                scanned += 1
-                if is_flat(df):
-                    continue          # pegged stablecoin -- noise, skip it
-                # A candle is either green or red, so at most one of these fires.
-                if check_pattern(df):
-                    matches.append((t, df.copy(), "long"))
-                elif check_pattern_bearish(df):
-                    matches.append((t, df.copy(), "short"))
+                if not df.empty:
+                    data[t] = df
             except (KeyError, IndexError):
                 continue
-    print(f"[{label}] scanned {scanned}/{len(tickers)} (rest had no Yahoo data)")
+    if dedupe:
+        data = dedupe_crypto(data)
+
+    matches = []
+    for t, df in data.items():
+        if is_flat(df):
+            continue          # pegged stablecoin -- noise, skip it
+        # A candle is either green or red, so at most one of these fires.
+        if check_pattern(df):
+            matches.append((t, df.copy(), "long"))
+        elif check_pattern_bearish(df):
+            matches.append((t, df.copy(), "short"))
+    print(f"[{label}] scanned {len(data)}/{len(tickers)} (rest had no Yahoo data)")
     return matches
 
 
@@ -629,7 +680,8 @@ def run_timeframe(tf, groups):
     print(f"\n--- {tf['label']} ({tf['interval']}) ---")
     found = []
     for kind, tickers, label in groups:
-        results = scan(tickers, label, tf["interval"], tf["period"], tf["closed_only"])
+        results = scan(tickers, label, tf["interval"], tf["period"], tf["closed_only"],
+                       dedupe=(kind == "CRYPTO"))
         found += [(kind, t, df, direction) for t, df, direction in results]
     return found
 
