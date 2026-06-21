@@ -1,20 +1,26 @@
 """
 Manual scanner -- run it by hand to get the latest pattern matches as chart PNGs.
 
-It reproduces the SAME coverage as all the scheduled bots, in this one file:
-  - US stocks, every cap tier >= $250M    (weekly + monthly)
-  - Crypto top 1000                        (weekly + monthly)
-  - Crypto top 300                         (intraday: 6H, 8H, 12H, 1D, 2D, 3D, 4D)
+ONE file, the SAME coverage as all your scheduled bots. With no flags it runs
+every bot; with --bot it runs just one. The seven scanner bots are:
 
-Unlike the bots it does NOT log to signals.csv and does NOT send Telegram/email,
-and it ignores the "candle just closed" freshness gate -- it simply checks each
-ticker's most recent CLOSED candle on every timeframe. Every match is saved as a
-candlestick PNG into a fresh, timestamped folder under the charts/ directory,
-which opens in File Explorer when the run finishes.
+    stock_mega        US stocks > $200B                 (weekly + monthly)
+    stock_large       US stocks $10B - $200B            (weekly + monthly)
+    stock_mid         US stocks $2B - $10B              (weekly + monthly)
+    stock_small       US stocks $250M - $2B             (weekly + monthly)
+    crypto_top1000    crypto rank 300 - 1000            (weekly + monthly)
+    crypto_wm         crypto rank 1 - 300               (weekly + monthly)
+    crypto_intraday   crypto rank 1 - 300               (6H,8H,12H,1D,2D,3D,4D)
 
-    python scan_now.py                # everything (slow: thousands of tickers)
-    python scan_now.py --only stocks  # just stocks   (or: crypto)
-    python scan_now.py --no-intraday  # skip the heavy 6H..4D crypto frames
+Unlike the live bots it does NOT log to signals.csv and does NOT send Telegram/
+email, and it ignores the "candle just closed" freshness gate -- it simply checks
+each ticker's most recent CLOSED candle. Every match is saved as a candlestick
+PNG into a fresh, timestamped folder under the charts/ directory, which opens in
+File Explorer when the run finishes.
+
+    python scan_now.py                      # every bot (slow)
+    python scan_now.py --bot stock_mid      # just one bot
+    python scan_now.py --no-intraday        # every bot except crypto_intraday
 
 The same swallow pattern as the live bots is used (imported from scan_all).
 """
@@ -25,42 +31,19 @@ import os
 
 import scan_all as s
 import scan_crypto as cr
-
-M = 1_000_000
-B = 1_000_000_000
-
-MIN_STOCK_CAP = 250 * M   # smallest cap tier the bots scan (small-cap floor)
-CRYPTO_WM_TOP = 1000      # weekly/monthly crypto universe (ranks 1-1000)
-CRYPTO_INTRADAY_TOP = 300 # intraday crypto universe (ranks 1-300)
-
-
-def stock_universe():
-    """Every US stock at or above the small-cap floor (all tiers the bots cover)."""
-    rows = s.get_us_stocks_with_caps()
-    return [sym for sym, cap in rows if cap >= MIN_STOCK_CAP]
-
-
-def scan_stocks():
-    """All US stocks on weekly + monthly. Returns (kind, t, df, tf_label, dir)."""
-    universe = stock_universe()
-    print(f"  Stocks: {len(universe)} tickers (all tiers >= ${MIN_STOCK_CAP/B:.2g}B)")
-    groups = [("STOCK", universe, "Stocks")]
-    out = []
-    for tf in s.TIMEFRAMES:   # weekly (keep forming bar) + monthly (drop it)
-        for k, t, df, direction in s.run_timeframe(tf, groups):
-            out.append((k, t, df, tf["label"], direction))
-    return out
+import scan_segment as seg
 
 
 def scan_crypto_frames(crypto, frames):
     """Scan a crypto list across `frames`, checking each coin's most recent CLOSED
-    candle (no freshness gate, unlike the live bot). Returns match tuples."""
+    candle (no freshness gate, unlike the live bot). Returns match tuples
+    (kind, ticker, df, tf_label, direction)."""
     needed_bases = {tf["base"] for tf in frames}
     bases = {}
     for b in needed_bases:
-        print(f"\n  Downloading {b} candles for {len(crypto)} coins...")
+        print(f"    downloading {b} candles for {len(crypto)} coins...")
         bases[b] = cr.download_base(crypto, b, cr.BASE_PERIODS[b])
-        print(f"    got data for {len(bases[b])}/{len(crypto)} coins")
+        print(f"      got data for {len(bases[b])}/{len(crypto)} coins")
 
     out = []
     for tf in frames:
@@ -79,21 +62,56 @@ def scan_crypto_frames(crypto, frames):
                     out.append(("CRYPTO", t, d, tf["label"], "short")); n += 1
             except Exception:
                 continue
-        print(f"  [{tf['label']}] {n} match(es) from {len(base_data)} coins")
+        print(f"    [{tf['label']}] {n} match(es) from {len(base_data)} coins")
     return out
 
 
-def scan_crypto(do_intraday=True):
-    """Crypto coverage: top 1000 on weekly/monthly, top 300 on intraday frames."""
+def scan_stock_tier(key):
+    """One stock cap-tier bot (stock_mega/large/mid/small) on weekly + monthly."""
+    seg_def = seg.SEGMENTS[key]
+    low, high = seg_def["cap"]
+    universe = seg.build_stock_universe(low, high)
+    print(f"    {seg_def['label']}: {len(universe)} stocks")
+    groups = [("STOCK", universe, seg_def["label"])]
     out = []
-    top_wm = s.get_top_crypto(CRYPTO_WM_TOP)
-    print(f"  Crypto weekly/monthly: {len(top_wm)} coins (top {CRYPTO_WM_TOP})")
-    out += scan_crypto_frames(top_wm, cr.WM_FRAMES)
-    if do_intraday:
-        top_intraday = s.get_top_crypto(CRYPTO_INTRADAY_TOP)
-        print(f"\n  Crypto intraday: {len(top_intraday)} coins (top {CRYPTO_INTRADAY_TOP})")
-        out += scan_crypto_frames(top_intraday, cr.INTRADAY_FRAMES)
+    for tf in s.TIMEFRAMES:   # weekly (keep forming bar) + monthly (drop it)
+        for k, t, df, direction in s.run_timeframe(tf, groups):
+            out.append((k, t, df, tf["label"], direction))
     return out
+
+
+def scan_crypto_top1000():
+    """The crypto_top1000 bot: ranks 300-1000 on weekly + monthly."""
+    low, high = seg.SEGMENTS["crypto_top1000"]["rank"]
+    universe = seg.build_crypto_universe(low, high)
+    print(f"    Crypto rank {low}-{high}: {len(universe)} coins")
+    return scan_crypto_frames(universe, cr.WM_FRAMES)
+
+
+def scan_crypto_wm():
+    """The crypto_wm bot: top 300 on weekly + monthly."""
+    universe = s.get_top_crypto(cr.CRYPTO_TOP_N)
+    print(f"    Crypto top {cr.CRYPTO_TOP_N}: {len(universe)} coins")
+    return scan_crypto_frames(universe, cr.WM_FRAMES)
+
+
+def scan_crypto_intraday():
+    """The crypto_intraday bot: top 300 on the 6H..4D frames."""
+    universe = s.get_top_crypto(cr.CRYPTO_TOP_N)
+    print(f"    Crypto top {cr.CRYPTO_TOP_N}: {len(universe)} coins")
+    return scan_crypto_frames(universe, cr.INTRADAY_FRAMES)
+
+
+# Each bot name -> the function that scans exactly what that scheduled bot scans.
+BOTS = {
+    "stock_mega":      lambda: scan_stock_tier("stock_mega"),
+    "stock_large":     lambda: scan_stock_tier("stock_large"),
+    "stock_mid":       lambda: scan_stock_tier("stock_mid"),
+    "stock_small":     lambda: scan_stock_tier("stock_small"),
+    "crypto_top1000":  scan_crypto_top1000,
+    "crypto_wm":       scan_crypto_wm,
+    "crypto_intraday": scan_crypto_intraday,
+}
 
 
 def draw(matches):
@@ -109,11 +127,12 @@ def draw(matches):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Manual pattern scan -> chart PNGs")
-    parser.add_argument("--only", choices=["stocks", "crypto"],
-                        help="limit to one asset class (default: both)")
+    parser = argparse.ArgumentParser(
+        description="Manual pattern scan -> chart PNGs (one bot or all of them)")
+    parser.add_argument("--bot", choices=list(BOTS),
+                        help="run just one bot (default: all of them)")
     parser.add_argument("--no-intraday", action="store_true",
-                        help="skip the heavy 6H..4D crypto frames")
+                        help="when running all bots, skip the heavy crypto_intraday bot")
     args = parser.parse_args()
 
     # Save every chart from this run into one fresh, timestamped folder so each
@@ -123,16 +142,23 @@ def main():
     os.makedirs(run_dir, exist_ok=True)
     s.CHART_DIR = run_dir
 
-    print("Scanning -- this can take several minutes for the full universe.\n")
-    matches = []
-    if args.only in (None, "stocks"):
-        print("=== STOCKS ===")
-        matches += scan_stocks()
-    if args.only in (None, "crypto"):
-        print("\n=== CRYPTO ===")
-        matches += scan_crypto(do_intraday=not args.no_intraday)
+    if args.bot:
+        todo = [args.bot]
+    else:
+        todo = list(BOTS)
+        if args.no_intraday:
+            todo.remove("crypto_intraday")
 
-    print("\n" + "=" * 40)
+    print(f"Scanning bot(s): {', '.join(todo)}")
+    print("(this can take several minutes for the full universe)\n")
+
+    matches = []
+    for name in todo:
+        print(f"=== {name} ===")
+        matches += BOTS[name]()
+        print()
+
+    print("=" * 40)
     if not matches:
         print("No matches this scan -- no charts to draw.")
         print("=" * 40)
