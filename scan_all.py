@@ -568,16 +568,49 @@ def save_chart(ticker, kind, df, timeframe="WEEKLY", bars=40, direction="long"):
     # Keep long filenames byte-identical to before; tag shorts so the two don't collide.
     tag = "SHORT_" if direction == "short" else ""
     out = os.path.join(out_dir, f"{timeframe}_{tag}{kind}_{_safe_name(label)}_{candle}.png")
+    # Bitcoin gets a unique gold-themed chart so it's instantly recognisable;
+    # every other asset keeps the standard "charles" style + blue highlight.
+    if ticker == "BTC-USD":
+        style = _btc_chart_style()
+        highlight = "darkorange"
+    else:
+        style = "charles"
+        highlight = "royalblue"
     mpf.plot(
         plot_df,
         type="candle",
-        style="charles",
+        style=style,
         title=f"\n{label} ({kind}) - {timeframe} {pattern_name(direction)}",
         ylabel="Price",
-        vlines=dict(vlines=pattern_dates, colors="royalblue", alpha=0.25, linewidths=10),
+        vlines=dict(vlines=pattern_dates, colors=highlight, alpha=0.25, linewidths=10),
         savefig=dict(fname=out, dpi=120, bbox_inches="tight"),
     )
     return out
+
+
+_BTC_STYLE_CACHE = None
+
+
+def _btc_chart_style():
+    """Bitcoin charts keep the SAME green/red candles as every other coin, but get
+    a distinct gold-tinted background so a BTC alert is recognisable at a glance.
+    Built once and cached."""
+    global _BTC_STYLE_CACHE
+    if _BTC_STYLE_CACHE is None:
+        # Use the EXACT "charles" candle colors (green up / red down) so the
+        # candles themselves are identical to every other chart -- only the canvas
+        # behind them differs.
+        mc = mpf.make_marketcolors(
+            up="#006340", down="#a02128",
+            edge="inherit", wick="inherit", volume="in",
+        )
+        _BTC_STYLE_CACHE = mpf.make_mpf_style(
+            marketcolors=mc,
+            facecolor="#fff4d6", edgecolor="#f7931a",   # soft gold background
+            figcolor="#fff4d6",
+            gridcolor="#e8d28f", gridstyle=":",
+        )
+    return _BTC_STYLE_CACHE
 
 
 # ---------------------------------------------------------------------------
