@@ -1,0 +1,51 @@
+name: US index multi-timeframe scan
+
+# Bot #4 -- US500 / US100 / US30 index futures (ES=F, NQ=F, YM=F),
+# every frame from 4H to 1Y: 4H, 6H, 8H, 12H, 1D, 2D, 3D, 4D, 1W, 1M, 3M, 6M, 1Y.
+#
+# WHY NO `schedule:` HERE: GitHub's own cron fires late and bunched, which causes
+# late alerts and misses. Like the crypto bots, this is triggered EXTERNALLY by a
+# punctual scheduler (cron-job.org) that POSTs to the workflow_dispatch API. The
+# `frames` input narrows the scan to the timeframe(s) that just closed; empty =
+# scan all (each frame self-skips on its off-days, and a freshness gate makes sure
+# a candle is never alerted twice).
+#
+# SIMPLEST SETUP -- one hourly job covers everything:
+#   Method  : POST
+#   URL     : https://api.github.com/repos/am140512623/candle-scanner/actions/workflows/scan-indices.yml/dispatches
+#   Headers : Authorization: Bearer <GitHub PAT with 'actions: write' on this repo>
+#             Accept: application/vnd.github+json
+#             X-GitHub-Api-Version: 2022-11-28
+#   Body    : {"ref":"main","inputs":{"frames":""}}
+#   Schedule: every hour, on the hour (UTC).
+# The 90-minute freshness window (INDEX_FRESHNESS_MIN) means an hourly run reliably
+# catches each just-closed intraday candle exactly once; the 1D..1Y frames close at
+# 00:00 UTC on their own days and are caught by the 00:00 run. If you'd rather fire
+# a tighter trigger per close time, set frames to just that label (e.g. "4H").
+on:
+  workflow_dispatch:
+    inputs:
+      frames:
+        description: "Frames to scan, comma-separated (e.g. 4H,1D). Empty = all."
+        required: false
+        default: ""
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write    # so logged signals can be committed back to the repo
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python scan_indices.py
+        env:
+          INDEX_FRAMES: ${{ inputs.frames }}
+          US_INDEX_BOT_TOKEN: ${{ secrets.US_INDEX_BOT_TOKEN }}
+          US_INDEX_CHAT_ID: ${{ secrets.US_INDEX_CHAT_ID }}
+      - name: Save logged signals
+        if: always()
+        run: bash .github/scripts/commit_data.sh signals.csv
