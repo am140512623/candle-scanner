@@ -1,0 +1,218 @@
+//@version=6
+// =====================================================================
+// Sharp Drop -> Higher Low -> Peak Break   (INDICATOR)
+// ---------------------------------------------------------------------
+//   1) SHARP DROP : a contiguous red decline into a bottom (low1). Small
+//      moves BEFORE the big drop are ignored -- the drop is only the red
+//      run that ends at the bottom.
+//   2) PEAK       : a swing high printed after the bounce off the bottom.
+//   3) HIGHER LOW : a pullback low (low2) that sits ABOVE the bottom.
+//   4) ANGLE      : the line BOTTOM -> HIGHER LOW must rise at 30-45 deg
+//      vs the horizontal at the bottom (measured in % per bar, so it does
+//      not change when you zoom the chart).
+//   5) ENTRY      : a candle BREAKS the peak.
+// =====================================================================
+indicator("Sharp Drop → Higher Low → Peak Break", overlay = true,
+     max_lines_count = 500, max_labels_count = 500, max_bars_back = 1000)
+
+// ----------------------------- inputs --------------------------------
+k           = input.int(2,    "Pivot strength (bars each side)", minval = 1, group = "Structure")
+searchBars  = input.int(120,  "Look-back window (bars)", minval = 20, group = "Structure")
+maxRecovery = input.int(40,   "Max bars from bottom up to the peak", minval = 2, group = "Structure")
+
+minDropPct  = input.float(4.0,"Sharp drop: min size %",   minval = 0, group = "Sharp drop") / 100.0
+minDropBars = input.int(4,    "Sharp drop: min length (bars)", minval = 1, group = "Sharp drop")
+maxDropBars = input.int(30,   "Sharp drop: max length (bars)", minval = 2, group = "Sharp drop")
+maxNonRed   = input.int(0,    "Non-red candles allowed inside drop", minval = 0, group = "Sharp drop")
+
+minAngle    = input.float(30, "Trend angle: minimum °", group = "Trend angle")
+maxAngle    = input.float(45, "Trend angle: maximum °", group = "Trend angle")
+pctPerBar45 = input.float(0.3,"% rise per bar that equals 45°", minval = 0.001, group = "Trend angle") / 100.0
+
+useClose    = input.bool(true,"Breakout confirmed on CLOSE (off = wick)", group = "Entry")
+drawLevels  = input.bool(true,"Draw pattern lines", group = "Display")
+debug       = input.bool(false,"DEBUG: show rule checks", group = "Display")
+
+// ------------------------ pivot storage ------------------------------
+var array<float> phP = array.new_float()
+var array<int>   phB = array.new_int()
+ph = ta.pivothigh(k, k)
+if not na(ph)
+    array.push(phP, ph)
+    array.push(phB, bar_index - k)
+if array.size(phP) > 100
+    array.shift(phP)
+    array.shift(phB)
+
+// --------------------------- detection -------------------------------
+// PEAK = most recent pivot high, if recent enough.
+float peak    = na
+int   peakBar = na
+if array.size(phP) > 0
+    pb = array.get(phB, array.size(phB) - 1)
+    if pb >= bar_index - searchBars
+        peak    := array.get(phP, array.size(phP) - 1)
+        peakBar := pb
+
+// BREAKOUT of that peak, on this bar.
+// Entry = a GREEN candle that closes above the peak (or a wick poke in wick mode).
+bool brk = false
+if not na(peak)
+    brk := useClose ? (close > peak and close[1] <= peak and close > open) : (high > peak and high[1] <= peak)
+
+// HIGHER LOW = lowest low between the peak and the bar before now.
+float low2    = na
+int   low2Bar = na
+if not na(peakBar) and peakBar < bar_index - 1
+    float best  = na
+    int   bestB = na
+    int   bi = peakBar + 1
+    while bi <= bar_index - 1
+        int off = bar_index - bi
+        if na(best) or low[off] < best
+            best  := low[off]
+            bestB := bi
+        bi += 1
+    low2    := best
+    low2Bar := bestB
+
+// BOTTOM (low1) = the DEEPEST low before the peak (the real spike low).
+float low1    = na
+int   low1Bar = na
+if not na(peakBar)
+    float lbest  = na
+    int   lbestB = na
+    int   b = peakBar - 1
+    int   stopB = math.max(0, peakBar - maxRecovery)
+    while b >= stopB
+        int off = bar_index - b
+        if na(lbest) or low[off] < lbest
+            lbest  := low[off]
+            lbestB := b
+        b -= 1
+    low1    := lbest
+    low1Bar := lbestB
+
+// DROP = the contiguous red run that ENDS at the bottom (ignores any small
+// move + green candles that happen BEFORE the big drop).
+float dsP   = na
+int   dsBar = na
+if not na(low1Bar)
+    int  runStart = low1Bar
+    int  greens   = 0
+    int  b2 = low1Bar - 1
+    bool go = true
+    while b2 >= 0 and go
+        int  off   = bar_index - b2
+        bool isRed = close[off] < open[off]
+        if isRed
+            runStart := b2
+            b2 -= 1
+        else if greens < maxNonRed
+            greens   += 1
+            runStart := b2
+            b2 -= 1
+        else
+            go := false
+    dsBar := math.max(0, runStart - 1)
+    dsP   := high[bar_index - dsBar]
+
+// ------------------------- validations -------------------------------
+bool haveAll = not na(peak) and not na(low2) and not na(low1) and not na(dsBar)
+bool hlOk = haveAll and low2 > low1                       // higher low
+// SHADOW: the peak and the second bottom must stay BELOW the drop's top (dsP),
+// i.e. the whole structure sits inside the range of the first drop.
+bool shadowOk = haveAll and peak < dsP and low2 < dsP
+
+float dropPct  = na
+int   dropBars = na
+bool  dropOk   = false
+if haveAll
+    dropBars := low1Bar - dsBar
+    dropPct  := dsP > 0 ? (dsP - low1) / dsP : 0.0
+    dropOk   := dropBars >= minDropBars and dropBars <= maxDropBars and dropPct >= minDropPct
+
+bool redOk = false
+if dropOk
+    int nonRed = 0
+    int bi2 = dsBar + 1
+    while bi2 <= low1Bar - 1
+        int off = bar_index - bi2
+        if close[off] >= open[off]
+            nonRed += 1
+        bi2 += 1
+    redOk := nonRed <= maxNonRed
+
+// ANGLE between the horizontal at the bottom and the BOTTOM -> HIGHER LOW line.
+// rise = % gain low1->low2, run = bars * (% per bar that = 45°). Scale-stable.
+float angle = na
+if haveAll and low2Bar > low1Bar and low1 > 0
+    float rise = (low2 - low1) / low1
+    float run  = (low2Bar - low1Bar) * pctPerBar45
+    angle := math.todegrees(math.atan(rise / run))
+bool angleOk = not na(angle) and angle >= minAngle and angle <= maxAngle
+
+// Angle is NO LONGER a filter (still drawn/shown for reference only).
+bool signal = haveAll and brk and hlOk and dropOk and redOk and shadowOk
+
+// --------------------------- drawing ---------------------------------
+plotshape(signal, title = "Entry", style = shape.triangleup,
+     location = location.belowbar, color = color.lime, size = size.small, text = "BUY")
+
+if signal and drawLevels
+    // pattern path -- every line ends inside the pattern (no chart-wide rays)
+    line.new(dsBar,   dsP,  low1Bar,   low1,  xloc = xloc.bar_index, color = color.red,    width = 3)
+    line.new(low1Bar, low1, peakBar,   peak,  xloc = xloc.bar_index, color = color.lime,   width = 2)
+    line.new(peakBar, peak, low2Bar,   low2,  xloc = xloc.bar_index, color = color.orange, width = 2)
+    line.new(low2Bar, low2, bar_index, close, xloc = xloc.bar_index, color = color.lime,   width = 3)
+
+    // the angle: horizontal base + rising support line, both ending at the entry
+    line.new(low1Bar, low1, bar_index, low1, xloc = xloc.bar_index,
+         color = color.new(color.green, 30), width = 1)
+    float slope = (low2 - low1) / (low2Bar - low1Bar)
+    float yEnd  = low1 + slope * (bar_index - low1Bar)
+    line.new(low1Bar, low1, bar_index, yEnd, xloc = xloc.bar_index,
+         color = color.yellow, width = 2)
+
+    // peak / entry level -- stops at the breakout bar, not extended
+    line.new(peakBar, peak, bar_index, peak, xloc = xloc.bar_index,
+         color = color.aqua, style = line.style_dotted, width = 1)
+
+    // tags
+    label.new(low1Bar, low1, "BOTTOM", xloc = xloc.bar_index, yloc = yloc.belowbar,
+         style = label.style_label_up, color = color.new(color.red, 0),
+         textcolor = color.white, size = size.tiny)
+    label.new(low2Bar, low2, "HIGHER LOW", xloc = xloc.bar_index, yloc = yloc.belowbar,
+         style = label.style_label_up, color = color.new(color.orange, 0),
+         textcolor = color.white, size = size.tiny)
+    label.new(low1Bar, low1, str.tostring(angle, "#") + "°", xloc = xloc.bar_index,
+         yloc = yloc.price, style = label.style_label_left, color = color.new(color.yellow, 20),
+         textcolor = color.black, size = size.tiny)
+    label.new(bar_index, high, "ENTRY ▲", xloc = xloc.bar_index, yloc = yloc.abovebar,
+         style = label.style_label_down, color = color.new(color.green, 0),
+         textcolor = color.white, size = size.small)
+
+alertcondition(signal, "Sharp-Drop Breakout",
+     "Sharp drop → higher low → peak break: BUY breakout")
+
+// --------------------------- DEBUG -----------------------------------
+var line dl1 = na
+var line dl2 = na
+var table dbg = table.new(position.top_right, 1, 8, border_width = 1)
+f_cell(_r, _t, _ok) =>
+    table.cell(dbg, 0, _r, _t, text_color = color.white, text_size = size.small,
+         bgcolor = _ok ? color.new(color.green, 0) : color.new(color.red, 0))
+if debug and barstate.islast
+    line.delete(dl1)
+    line.delete(dl2)
+    if not na(peakBar) and not na(low1Bar)
+        dl1 := line.new(dsBar, dsP, low1Bar, low1, xloc = xloc.bar_index, color = color.gray, width = 1)
+        dl2 := line.new(low1Bar, low1, peakBar, peak, xloc = xloc.bar_index, color = color.gray, width = 1)
+    table.cell(dbg, 0, 0, "DEBUG checks", text_color = color.white, text_size = size.small, bgcolor = color.new(color.gray, 0))
+    f_cell(1, "structure " + (haveAll ? "OK" : "✗"), haveAll)
+    f_cell(2, "sharp drop " + (dropOk ? "OK " : "✗ ") + str.tostring(nz(dropPct) * 100, "#.#") + "%", dropOk)
+    f_cell(3, "all-red drop " + (redOk ? "OK" : "✗ green inside"), redOk)
+    f_cell(4, "higher low " + (hlOk ? "OK" : "✗"), hlOk)
+    f_cell(5, "angle " + str.tostring(nz(angle), "#") + "° " + (angleOk ? "OK" : "✗"), angleOk)
+    f_cell(6, "in shadow " + (shadowOk ? "OK" : "✗ peak too high"), shadowOk)
+    f_cell(7, "breakout " + (brk ? "OK" : "✗ waiting"), brk)
