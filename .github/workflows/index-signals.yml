@@ -1,0 +1,30 @@
+name: US index sharp-drop signals
+
+# Sharp Drop -> Higher Low -> Peak Break on REAL buyable ETF shares (not CFDs):
+#   US30 -> DIA, US100 -> QQQ, US500 -> SPY, frames 30m/1h/2h/4h/1D/1W.
+# Alerts go to the @us3indexbot (US_INDEX_BOT_TOKEN). Each signal fires once -- the
+# .index_signals_seen.txt state file is committed back so CI remembers across runs.
+
+on:
+  schedule:
+    - cron: "5 * * * *"      # hourly, 5 min past the hour (UTC)
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python index_signals.py --print
+        env:
+          US_INDEX_BOT_TOKEN: ${{ secrets.US_INDEX_BOT_TOKEN }}
+          US_INDEX_CHAT_ID: ${{ secrets.US_INDEX_CHAT_ID }}
+      - name: Save seen-signals state
+        if: always()
+        run: bash .github/scripts/commit_data.sh .index_signals_seen.txt

@@ -10,9 +10,9 @@ We use the CME futures (not the cash indices or ETFs) because they trade ~23h a
 day, so the intraday 4H..12H candles align cleanly -- the cash indices only trade
 ~6.5h, which would leave ragged intraday bars. The mapping is:
 
-    ES=F -> US500  (S&P 500 e-mini)
-    NQ=F -> US100  (Nasdaq-100 e-mini)
-    YM=F -> US30   (Dow e-mini)
+    SPY -> US500  (S&P 500 ETF, real shares)
+    QQQ -> US100  (Nasdaq-100 ETF, real shares)
+    DIA -> US30   (Dow 30 ETF, real shares)
 
 Yahoo serves 1h and 1d candles natively. The 4H/6H/8H/12H frames are built from
 hourly data; everything 1D and above is built from daily data (which goes back to
@@ -45,12 +45,12 @@ s.CHAT_IDS = [
 if os.environ.get("US_INDEX_CHAT_ID"):
     s.CHAT_IDS = [c.strip() for c in os.environ["US_INDEX_CHAT_ID"].split(",") if c.strip()]
 
-# The universe: three index futures, with the friendly US### names shown in alerts
-# and charts, plus the TradingView continuous-contract symbol for the chart link.
+# The universe: three index ETFs you BUY as real shares (NOT futures/CFDs), with
+# the friendly US### names shown in alerts and the TradingView symbol for the link.
 INDICES = {
-    "ES=F": {"name": "US500 (S&P 500)",     "tv": "ES1!"},
-    "NQ=F": {"name": "US100 (Nasdaq 100)",  "tv": "NQ1!"},
-    "YM=F": {"name": "US30 (Dow 30)",       "tv": "YM1!"},
+    "SPY": {"name": "US500 (S&P 500 — SPY)",    "tv": "SPY"},
+    "QQQ": {"name": "US100 (Nasdaq 100 — QQQ)", "tv": "QQQ"},
+    "DIA": {"name": "US30 (Dow 30 — DIA)",      "tv": "DIA"},
 }
 # Teach save_chart the friendly labels (it looks names up in COMMODITIES).
 s.COMMODITIES.update({sym: meta["name"] for sym, meta in INDICES.items()})
