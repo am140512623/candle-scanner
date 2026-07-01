@@ -36,6 +36,7 @@ Run one slice locally (PowerShell):
 import datetime
 import os
 
+import mplfinance as mpf
 import numpy as np
 import pandas as pd
 
@@ -97,24 +98,27 @@ def _pivot_lows(values, lb, rb):
 
 
 def divergence_grab(df):
-    """(matched, strong) for the LONG oversold-divergence -> grab setup, evaluated
-    on the LAST candle of `df` (the runner has already trimmed to the just-closed
-    candle).
+    """(matched, strong, info) for the LONG oversold-divergence -> grab setup,
+    evaluated on the LAST candle of `df` (the runner has already trimmed to the
+    just-closed candle).
 
     matched -> a valid oversold divergence completed within GRAB_WINDOW bars before
                the last candle, AND that last candle is a bullish `_swallow` grab.
     strong  -> both RSI pivot lows of that divergence are under STRONG_LEVEL (<20).
+    info    -> None if no match, else the two divergence pivots for the chart:
+               {"d1": (pos, price_low, rsi), "d2": (pos, price_low, rsi)}
+               (d1 = older/left low, d2 = newer/right low).
 
     Bottoms are read from the wicks (df['Low']), never the bodies -- same as the
     scanner's grab, which sweeps df['Low'].
     """
     if df is None or len(df) < MIN_BARS:
-        return (False, False)
+        return (False, False, None)
 
     rsi = _wilder_rsi(df["Close"])
     piv = _pivot_lows(rsi.values, PIV_LB, PIV_RB)
     if len(piv) < 2:
-        return (False, False)
+        return (False, False, None)
 
     lows = df["Low"].values
     rvals = rsi.values
@@ -123,6 +127,7 @@ def divergence_grab(df):
     # Walk pivot pairs newest-first; the divergence's second (confirming) low must
     # sit within GRAB_WINDOW bars of the grab candle.
     strong = None
+    info = None
     for j in range(len(piv) - 1, 0, -1):
         cur, prev = piv[j], piv[j - 1]
         if (last - cur) > GRAB_WINDOW:
@@ -135,14 +140,16 @@ def divergence_grab(df):
         both_os = rvals[cur] < OS_LEVEL and rvals[prev] < OS_LEVEL
         if price_ll and rsi_hl and both_os:
             strong = bool(rvals[cur] < STRONG_LEVEL and rvals[prev] < STRONG_LEVEL)
+            info = {"d1": (int(prev), float(lows[prev]), float(rvals[prev])),
+                    "d2": (int(cur),  float(lows[cur]),  float(rvals[cur]))}
             break
 
     if strong is None:
-        return (False, False)
+        return (False, False, None)
     # Same grab engine as the stock/crypto bots -- must fire on the last candle.
     if not s._swallow(df, bullish=True):
-        return (False, False)
-    return (True, strong)
+        return (False, False, None)
+    return (True, strong, info)
 
 
 # ---------------------------------------------------------------------------
@@ -287,11 +294,78 @@ def build_universe(segment):
 
 
 # ---------------------------------------------------------------------------
+# CHART -- candles + RSI panel with the divergence drawn on both. STRONG (<20)
+# gets a distinct theme + magenta so it stands out at a glance.
+# ---------------------------------------------------------------------------
+def save_div_chart(ticker, kind, df, tf_label, strong, info, bars=None):
+    """Candlestick PNG with an RSI(14) sub-panel. Draws the divergence line across
+    the two price lows AND across the two RSI lows (with pivot markers), the 30/20
+    oversold lines, and highlights the grab candle(s). Normal = blue theme; STRONG
+    (both legs <20) = a darker theme with magenta so it's instantly recognisable."""
+    label = s.COMMODITIES.get(ticker, ticker)
+    candle = df.index[-1].date()
+    out_dir = os.path.join(s.CHART_DIR, f"RSIDIV_{tf_label}_{candle}")
+    os.makedirs(out_dir, exist_ok=True)
+
+    last = len(df) - 1
+    d1pos, p1, r1 = info["d1"]
+    d2pos, p2, r2 = info["d2"]
+    if bars is None:                                  # show from the first low + margin
+        bars = max(40, (last - d1pos) + 12)
+    bars = min(bars, len(df))
+    plot_df = df.tail(bars).copy()
+    offset = len(df) - len(plot_df)
+    i1, i2 = d1pos - offset, d2pos - offset           # pivot positions inside plot_df
+    idx = plot_df.index
+
+    rsi = _wilder_rsi(plot_df["Close"])
+    have_pts = 0 <= i1 < len(idx) and 0 <= i2 < len(idx) and i2 > i1
+
+    # Both divergence lines are TRENDLINES that touch the two lows on their panel:
+    # the price line runs across the two candle tails (wick lows), and the RSI line
+    # runs across the two RSI pivot lows -- touching the bottom of the RSI curve, the
+    # same way the price line touches the candle tails. No offset, so neither floats.
+    rsi_line = pd.Series(np.nan, index=idx)           # line across the two RSI lows
+    if have_pts:
+        for k in range(i1, i2 + 1):
+            rsi_line.iloc[k] = r1 + (r2 - r1) * (k - i1) / (i2 - i1)
+
+    # colour scheme: STRONG pops in magenta on a dark theme; normal is calm blue.
+    theme = "nightclouds" if strong else "charles"
+    accent = "magenta" if strong else "royalblue"
+    aps = [
+        mpf.make_addplot(rsi, panel=1, color="teal", width=1.1, ylabel="RSI (14)"),
+        mpf.make_addplot(pd.Series(OS_LEVEL, index=idx), panel=1, color="gray",
+                         width=0.7, linestyle="--"),
+        mpf.make_addplot(pd.Series(STRONG_LEVEL, index=idx), panel=1, color="orange",
+                         width=0.7, linestyle="--"),
+    ]
+    if have_pts:                                       # the RSI underline
+        aps.append(mpf.make_addplot(rsi_line, panel=1, color=accent, width=2.2))
+
+    tag = "🔥 STRONG " if strong else ""
+    out = os.path.join(out_dir, f"RSIDIV_{tf_label}_{s._safe_name(label)}_{candle}.png")
+    kwargs = dict(
+        type="candle", style=theme, addplot=aps, panel_ratios=(3, 1),
+        title=f"\n{label} — {tag}RSI Oversold Divergence → Grab ({tf_label})",
+        ylabel="Price",
+        vlines=dict(vlines=[df.index[-2], df.index[-1]], colors=accent,
+                    alpha=0.30, linewidths=9),
+        savefig=dict(fname=out, dpi=120, bbox_inches="tight"),
+    )
+    if have_pts:                                       # price line across the two tails (wick lows)
+        kwargs["alines"] = dict(alines=[[(idx[i1], p1), (idx[i2], p2)]],
+                                colors=[accent], linewidths=[2.2])
+    mpf.plot(plot_df, **kwargs)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # RUN
 # ---------------------------------------------------------------------------
-def _alert(kind, ticker, tf_label, d, strong, bot):
+def _alert(kind, ticker, tf_label, d, strong, info, bot):
     """Log + send one match (chart if possible, else text). STRONG (<20) gets a
-    distinct 🔥 label so it's obvious at a glance."""
+    distinct 🔥 label + magenta chart so it's obvious at a glance."""
     yahoo, tv = s.chart_links(kind, ticker)
     name = s.COMMODITIES.get(ticker, ticker)
     tag = "🔥 STRONG " if strong else ""
@@ -304,7 +378,7 @@ def _alert(kind, ticker, tf_label, d, strong, bot):
     # on the same ticker/timeframe/candle.
     s.log_signal(kind, ticker, tf_label, d, bot=bot, direction="long", id_prefix="RSIDIV_")
     try:
-        chart_path = s.save_chart(ticker, kind, d, tf_label, direction="long")
+        chart_path = save_div_chart(ticker, kind, d, tf_label, strong, info)
         s.send_telegram_photo(chart_path, msg)
     except Exception as e:
         print(f"    (could not draw chart: {e})")
@@ -346,16 +420,16 @@ def run(segment, catalog=FRAMES_CATALOG, bot="rsi_div"):
                     continue
                 if is_crypto and s.is_flat(d):
                     continue                         # pegged stablecoin -- noise
-                matched, strong = divergence_grab(d)
+                matched, strong, info = divergence_grab(d)
                 if matched:
-                    matches.append((t, d, strong))
+                    matches.append((t, d, strong, info))
             except Exception:
                 continue
         print(f"\n[{tf['label']}] {len(matches)} match(es) from {len(base_data)} symbols"
               + (f" ({stale} skipped: candle not fresh)" if stale else ""))
-        for t, d, strong in matches:
+        for t, d, strong, info in matches:
             total += 1
-            _alert(kind, t, tf["label"], d, strong, bot)
+            _alert(kind, t, tf["label"], d, strong, info, bot)
 
     print("\n" + "=" * 40)
     print(f"{segment}: {total} total match(es) across all frames")

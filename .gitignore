@@ -3,7 +3,8 @@ charts/
 __pycache__/
 *.pyc
 WhatsApp*.jpeg
-# Telegram bot tokens / secrets -- never commit these
+# Telegram bot tokens / secrets / GitHub PAT -- never commit these
 bot sec.txt
+pat.txt
 *sec*.txt
 *.token
