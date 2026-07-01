@@ -1,24 +1,27 @@
 name: RSI oversold-divergence → grab scan
 
 # Bot #6 -- RSI oversold-divergence -> liquidity-grab (LONG only), scanned across
-# commodities, US index ETFs, top crypto, and every US stock cap tier, on every
-# frame from 1H to 1Y. Twin of rsi_divergence_liquidity_grab.pine.
+# EVERY asset class (commodities, US index ETFs, top crypto, and all US stock cap
+# tiers) on EVERY frame from 1H to 1Y. Twin of rsi_divergence_liquidity_grab.pine.
 #
-# Sharded two ways so no single run is huge:
-#   segment -> which universe slice (commodities / indices / crypto / stock_*).
-#   frames  -> which timeframe(s) just closed ("" = all; each frame self-skips on
-#              its off-days, and a 90-min freshness gate blocks double-alerts).
-#
-# WHY NO built-in `schedule:` -- like the other bots, trigger this EXTERNALLY with a
-# punctual scheduler (cron-job.org) that POSTs to the workflow_dispatch API, so cron
-# lateness never causes missed/late alerts. One hourly POST per segment covers it:
+# ONE trigger fans out to all seven universe slices in parallel (matrix), each
+# scanning every frame that just closed. So a SINGLE hourly cron-job.org POST
+# covers the whole market:
 #   POST https://api.github.com/repos/am140512623/candle-scanner/actions/workflows/scan-rsi-div.yml/dispatches
 #   Headers: Authorization: Bearer <PAT with actions:write>
 #            Accept: application/vnd.github+json
 #            X-GitHub-Api-Version: 2022-11-28
-#   Body:    {"ref":"main","inputs":{"segment":"commodities","frames":""}}
-# The light slices (commodities/indices/crypto) can run hourly; the heavy stock
-# tiers are cheaper to POST only around the daily/weekly closes (frames:"1D" etc).
+#   Body:    {"ref":"main","inputs":{"segment":"all","frames":""}}
+#   Schedule: every hour, on the hour (UTC).
+#
+# WHY cron-job.org and NOT GitHub's own `schedule:` -- the 1H frame needs a PUNCTUAL
+# run every hour. GitHub cron can be late (the 90-min freshness gate absorbs that)
+# but it also occasionally DROPS a scheduled run under load, which would miss that
+# hour's 1H candle outright (the scanner only checks the newest closed candle). An
+# external scheduler fires reliably, so no 1H candle is skipped.
+#
+# Manual runs: set segment to ONE slice (e.g. "crypto") to scan just that, or leave
+# it "all". frames narrows the scan (e.g. "1H,1D"); empty = all frames.
 #
 # SECRETS required: RSI_DIV_BOT_TOKEN (this bot's own Telegram token) and,
 # optionally, RSI_DIV_CHAT_ID (comma-separated recipients; defaults to A + m).
@@ -26,11 +29,11 @@ on:
   workflow_dispatch:
     inputs:
       segment:
-        description: "Universe slice: commodities | indices | crypto | stock_mega | stock_large | stock_mid | stock_small"
-        required: true
-        default: "commodities"
+        description: "'all' (whole market) or ONE slice: commodities | indices | crypto | stock_mega | stock_large | stock_mid | stock_small"
+        required: false
+        default: "all"
       frames:
-        description: "Frames to scan, comma-separated (e.g. 1H,1D). Empty = all."
+        description: "Frames to scan, comma-separated (e.g. 1H,1D). Empty = all (1H..1Y)."
         required: false
         default: ""
 
@@ -39,6 +42,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write    # so logged signals can be committed back to the repo
+    strategy:
+      fail-fast: false
+      # "all" (or empty) fans out to every slice in parallel; otherwise just the one.
+      matrix:
+        segment: ${{ (inputs.segment == '' || inputs.segment == 'all')
+          && fromJSON('["commodities","indices","crypto","stock_mega","stock_large","stock_mid","stock_small"]')
+          || fromJSON(format('["{0}"]', inputs.segment)) }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -47,7 +57,7 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python scan_rsi_div.py
         env:
-          RSI_SEGMENT: ${{ inputs.segment }}
+          RSI_SEGMENT: ${{ matrix.segment }}
           RSI_FRAMES: ${{ inputs.frames }}
           RSI_DIV_BOT_TOKEN: ${{ secrets.RSI_DIV_BOT_TOKEN }}
           RSI_DIV_CHAT_ID: ${{ secrets.RSI_DIV_CHAT_ID }}
