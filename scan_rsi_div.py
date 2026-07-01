@@ -318,7 +318,10 @@ def save_div_chart(ticker, kind, df, tf_label, strong, info, bars=None):
     i1, i2 = d1pos - offset, d2pos - offset           # pivot positions inside plot_df
     idx = plot_df.index
 
-    rsi = _wilder_rsi(plot_df["Close"])
+    # Compute RSI over the FULL history, then slice to the visible window, so the
+    # RSI line spans the whole chart like the candles (no blank 14-bar warm-up gap
+    # at the left edge).
+    rsi = _wilder_rsi(df["Close"]).reindex(idx)
     have_pts = 0 <= i1 < len(idx) and 0 <= i2 < len(idx) and i2 > i1
 
     # Both divergence lines are TRENDLINES that touch the two lows on their panel:
@@ -333,15 +336,20 @@ def save_div_chart(ticker, kind, df, tf_label, strong, info, bars=None):
     # colour scheme: STRONG pops in magenta on a dark theme; normal is calm blue.
     theme = "nightclouds" if strong else "charles"
     accent = "magenta" if strong else "royalblue"
+    # secondary_y=False keeps EVERY RSI-panel series on ONE shared y-axis. Without
+    # it mplfinance auto-splits them onto two axes with different scales, so the
+    # divergence line and 30/20 levels float at the wrong height vs the RSI curve.
     aps = [
-        mpf.make_addplot(rsi, panel=1, color="teal", width=1.1, ylabel="RSI (14)"),
+        mpf.make_addplot(rsi, panel=1, color="teal", width=1.1, ylabel="RSI (14)",
+                         secondary_y=False),
         mpf.make_addplot(pd.Series(OS_LEVEL, index=idx), panel=1, color="gray",
-                         width=0.7, linestyle="--"),
+                         width=0.7, linestyle="--", secondary_y=False),
         mpf.make_addplot(pd.Series(STRONG_LEVEL, index=idx), panel=1, color="orange",
-                         width=0.7, linestyle="--"),
+                         width=0.7, linestyle="--", secondary_y=False),
     ]
-    if have_pts:                                       # the RSI underline
-        aps.append(mpf.make_addplot(rsi_line, panel=1, color=accent, width=2.2))
+    if have_pts:                                       # thin divergence line so it doesn't cover the RSI curve
+        aps.append(mpf.make_addplot(rsi_line, panel=1, color=accent, width=0.9,
+                                    secondary_y=False))
 
     tag = "🔥 STRONG " if strong else ""
     out = os.path.join(out_dir, f"RSIDIV_{tf_label}_{s._safe_name(label)}_{candle}.png")
