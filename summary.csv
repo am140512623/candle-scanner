@@ -1,6 +1,6 @@
 bot,total_signals,scored,took_profit,stopped_out,open,win_rate_pct,avg_win_pct
-crypto_intraday,1088,597,44,553,491,7,18
-crypto_top1000,48,31,9,22,17,29,2
-crypto_wm,15,6,2,4,9,33,5
+crypto_intraday,1185,750,55,695,435,7,23
+crypto_top1000,48,32,10,22,16,31,5
+crypto_wm,28,13,3,10,15,23,17
 stock_mega,5,1,0,1,4,0,0
-stock_mid,66,23,1,22,43,4,20
+stock_mid,66,26,1,25,40,4,20
