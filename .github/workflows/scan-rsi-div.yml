@@ -1,41 +1,39 @@
 name: RSI oversold-divergence → grab scan
 
 # Bot #6 -- RSI oversold-divergence -> liquidity-grab (LONG only), scanned across
-# commodities, US index ETFs, top crypto, and every US stock cap tier, on every
-# frame from 1H to 1Y. Twin of rsi_divergence_liquidity_grab.pine.
+# EVERY asset class (commodities, US index ETFs, top crypto, and all US stock cap
+# tiers) on EVERY frame from 1H to 1Y. Twin of rsi_divergence_liquidity_grab.pine.
 #
-# Sharded two ways so no single run is huge:
-#   segment -> which universe slice (commodities / indices / crypto / stock_*).
-#   frames  -> which timeframe(s) to scan ("" = all; each frame self-skips on its
-#              off-days, and a 90-min freshness gate blocks double-alerts).
+# ONE trigger fans out to all seven universe slices in parallel (matrix), each
+# scanning every frame that just closed. So a SINGLE hourly cron-job.org POST
+# covers the whole market:
+#   POST https://api.github.com/repos/am140512623/candle-scanner/actions/workflows/scan-rsi-div.yml/dispatches
+#   Headers: Authorization: Bearer <PAT with actions:write>
+#            Accept: application/vnd.github+json
+#            X-GitHub-Api-Version: 2022-11-28
+#   Body:    {"ref":"main","inputs":{"segment":"all","frames":""}}
+#   Schedule: every hour, on the hour (UTC).
 #
-# SCHEDULING -- this bot self-runs on GitHub's built-in cron. Unlike the other
-# bots, that's fine here: the freshness window is 90 min (RSI_FRESHNESS_MIN), and
-# GitHub cron is only ever a few minutes late, so a late run still lands inside the
-# window and alerts exactly once. Two crons:
-#   * hourly  '0 * * * *'  -> the LIGHT slices (commodities, indices, crypto),
-#                             all frames. Small universes, cheap to run every hour.
-#   * daily   '5 0 * * *'  -> the HEAVY stock cap tiers, DAILY-and-up frames only
-#                             (1D..1Y). We skip 1H/4H.. on thousands of stocks --
-#                             that would mean pulling 1h candles for the whole
-#                             market every hour, which isn't practical.
-# Manual runs (workflow_dispatch) still scan ONE chosen segment + frames, handy for
-# testing or a one-off backfill.
+# WHY cron-job.org and NOT GitHub's own `schedule:` -- the 1H frame needs a PUNCTUAL
+# run every hour. GitHub cron can be late (the 90-min freshness gate absorbs that)
+# but it also occasionally DROPS a scheduled run under load, which would miss that
+# hour's 1H candle outright (the scanner only checks the newest closed candle). An
+# external scheduler fires reliably, so no 1H candle is skipped.
+#
+# Manual runs: set segment to ONE slice (e.g. "crypto") to scan just that, or leave
+# it "all". frames narrows the scan (e.g. "1H,1D"); empty = all frames.
 #
 # SECRETS required: RSI_DIV_BOT_TOKEN (this bot's own Telegram token) and,
 # optionally, RSI_DIV_CHAT_ID (comma-separated recipients; defaults to A + m).
 on:
-  schedule:
-    - cron: "0 * * * *"     # hourly  -> commodities / indices / crypto (all frames)
-    - cron: "5 0 * * *"     # 00:05 UTC daily -> stock tiers (1D..1Y only)
   workflow_dispatch:
     inputs:
       segment:
-        description: "Universe slice: commodities | indices | crypto | stock_mega | stock_large | stock_mid | stock_small"
-        required: true
-        default: "commodities"
+        description: "'all' (whole market) or ONE slice: commodities | indices | crypto | stock_mega | stock_large | stock_mid | stock_small"
+        required: false
+        default: "all"
       frames:
-        description: "Frames to scan, comma-separated (e.g. 1H,1D). Empty = all."
+        description: "Frames to scan, comma-separated (e.g. 1H,1D). Empty = all (1H..1Y)."
         required: false
         default: ""
 
@@ -46,16 +44,11 @@ jobs:
       contents: write    # so logged signals can be committed back to the repo
     strategy:
       fail-fast: false
-      # Which segments run depends on how the workflow fired:
-      #   manual        -> just the one segment you chose
-      #   00:05 daily   -> the four stock cap tiers
-      #   hourly        -> the three light slices
+      # "all" (or empty) fans out to every slice in parallel; otherwise just the one.
       matrix:
-        segment: ${{ github.event_name == 'workflow_dispatch'
-          && fromJSON(format('["{0}"]', inputs.segment))
-          || (github.event.schedule == '5 0 * * *'
-            && fromJSON('["stock_mega","stock_large","stock_mid","stock_small"]')
-            || fromJSON('["commodities","indices","crypto"]')) }}
+        segment: ${{ (inputs.segment == '' || inputs.segment == 'all')
+          && fromJSON('["commodities","indices","crypto","stock_mega","stock_large","stock_mid","stock_small"]')
+          || fromJSON(format('["{0}"]', inputs.segment)) }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -65,13 +58,7 @@ jobs:
       - run: python scan_rsi_div.py
         env:
           RSI_SEGMENT: ${{ matrix.segment }}
-          # Manual = your chosen frames; daily stock run = daily-and-up only (no
-          # intraday on the whole stock market); hourly light run = all frames.
-          RSI_FRAMES: ${{ github.event_name == 'workflow_dispatch'
-            && inputs.frames
-            || (github.event.schedule == '5 0 * * *'
-              && '1D,2D,3D,4D,1W,1M,3M,6M,1Y'
-              || '') }}
+          RSI_FRAMES: ${{ inputs.frames }}
           RSI_DIV_BOT_TOKEN: ${{ secrets.RSI_DIV_BOT_TOKEN }}
           RSI_DIV_CHAT_ID: ${{ secrets.RSI_DIV_CHAT_ID }}
       - name: Save logged signals
