@@ -1,0 +1,67 @@
+name: Bollinger breakout → grab scan
+
+# Bot #7 -- Bollinger-breakout -> liquidity-grab (LONG only), scanned across EVERY
+# asset class (commodities, US index ETFs, top-100 crypto, and all US stock cap
+# tiers) on every frame from 4H to 1Y (the 1H frame is skipped). Twin of
+# bb_liquidity_grab.pine.
+#
+# ONE trigger fans out to all seven universe slices in parallel (matrix), each
+# scanning every frame that just closed. So a SINGLE hourly cron-job.org POST
+# covers the whole market:
+#   POST https://api.github.com/repos/am140512623/candle-scanner/actions/workflows/scan-bb-grab.yml/dispatches
+#   Headers: Authorization: Bearer <PAT with actions:write>
+#            Accept: application/vnd.github+json
+#            X-GitHub-Api-Version: 2022-11-28
+#   Body:    {"ref":"main","inputs":{"segment":"all","frames":""}}
+#   Schedule: every hour, on the hour (UTC).
+#
+# WHY cron-job.org and NOT GitHub's own `schedule:` -- the 1H frame needs a PUNCTUAL
+# run every hour. GitHub cron can be late (the 90-min freshness gate absorbs that)
+# but it also occasionally DROPS a scheduled run under load, which would miss that
+# hour's 1H candle outright (the scanner only checks the newest closed candle). An
+# external scheduler fires reliably, so no 1H candle is skipped.
+#
+# Manual runs: set segment to ONE slice (e.g. "crypto") to scan just that, or leave
+# it "all". frames narrows the scan (e.g. "1H,1D"); empty = all frames.
+#
+# SECRETS required: BB_GRAB_BOT_TOKEN (this bot's own Telegram token) and,
+# optionally, BB_GRAB_CHAT_ID (comma-separated recipients; defaults to A + m).
+on:
+  workflow_dispatch:
+    inputs:
+      segment:
+        description: "'all' (whole market) or ONE slice: commodities | indices | crypto | stock_mega | stock_large | stock_mid | stock_small"
+        required: false
+        default: "all"
+      frames:
+        description: "Frames to scan, comma-separated (e.g. 4H,1D). Empty = all (4H..1Y)."
+        required: false
+        default: ""
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write    # so logged signals can be committed back to the repo
+    strategy:
+      fail-fast: false
+      # "all" (or empty) fans out to every slice in parallel; otherwise just the one.
+      matrix:
+        segment: ${{ (inputs.segment == '' || inputs.segment == 'all')
+          && fromJSON('["commodities","indices","crypto","stock_mega","stock_large","stock_mid","stock_small"]')
+          || fromJSON(format('["{0}"]', inputs.segment)) }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python scan_bb_grab.py
+        env:
+          BB_SEGMENT: ${{ matrix.segment }}
+          BB_FRAMES: ${{ inputs.frames }}
+          BB_GRAB_BOT_TOKEN: ${{ secrets.BB_GRAB_BOT_TOKEN }}
+          BB_GRAB_CHAT_ID: ${{ secrets.BB_GRAB_CHAT_ID }}
+      - name: Save logged signals
+        if: always()
+        run: bash .github/scripts/commit_data.sh signals.csv

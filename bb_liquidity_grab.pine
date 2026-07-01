@@ -1,0 +1,83 @@
+//@version=6
+// =====================================================================
+// Bollinger Breakout  ->  Liquidity Grab   (INDICATOR)
+// ---------------------------------------------------------------------
+// A LONG setup: the SAME liquidity-grab "swallow" as the scanner, with one
+// extra gate on the trigger candle -- a Bollinger breakout on that bar:
+//
+//   1) LIQUIDITY GRAB (bullish "swallow", same engine as every bot):
+//        - A GREEN trigger candle whose body covers the prior green
+//          candle body(s) and whose LOW runs BELOW their low(s) -- it
+//          sweeps the liquidity resting under the recent block, then
+//          closes green. Fires on either layout:
+//            2-candle: trigger swallows the 1 candle before it.
+//            3-candle: trigger swallows the 2-candle block before it.
+//
+//   2) BOLLINGER BREAKOUT on that same trigger candle:
+//        - it OPENS below the UPPER band, and
+//        - it CLOSES above the UPPER band
+//      i.e. the grab candle punches up THROUGH the top band in one bar.
+//
+//   ENTRY = a grab whose trigger candle closes above the upper Bollinger
+//           band while having opened below it. Twin of scan_bb_grab.py.
+// =====================================================================
+indicator("Bollinger Breakout → Liquidity Grab", overlay = true,
+     max_lines_count = 500, max_labels_count = 500, max_bars_back = 1000)
+
+// ----------------------------- inputs --------------------------------
+bbLen  = input.int(20,   "Bollinger length",      minval = 2,   group = "Bollinger Bands")
+bbMult = input.float(2.0,"Bollinger StdDev mult", minval = 0.1, group = "Bollinger Bands")
+
+drawLevels = input.bool(true, "Draw pattern lines / labels", group = "Display")
+
+// -------------------------- Bollinger Bands --------------------------
+basis = ta.sma(close, bbLen)
+dev   = bbMult * ta.stdev(close, bbLen)
+upper = basis + dev
+lower = basis - dev
+
+pU = plot(upper, "Upper", color = color.new(color.red, 0),    linewidth = 1)
+pB = plot(basis, "Basis", color = color.new(color.orange, 0), linewidth = 1, style = plot.style_line)
+pL = plot(lower, "Lower", color = color.new(color.blue, 0),   linewidth = 1)
+fill(pU, pL, color = color.new(color.gray, 92))
+
+// --------------------- liquidity grab (swallow) ----------------------
+// Bullish grab: GREEN trigger swallows the prior green candle body(s) and
+// sweeps below their low(s). No close/shape rule beyond that.
+bool triggerGreen = close > open
+float bodyTop     = math.max(open, close)
+
+bool green1   = close[1] > open[1]
+float refTop1 = math.max(open[1], close[1])
+bool swallow2 = triggerGreen and green1 and bodyTop >= refTop1 and low <= low[1]
+
+bool green2   = close[2] > open[2]
+float refTop2 = math.max(open[2], close[2])
+bool swallow3 = triggerGreen and green1 and green2 and
+     bodyTop >= math.max(refTop1, refTop2) and low <= math.min(low[1], low[2])
+
+bool grab = swallow2 or swallow3
+
+// ----------------------- Bollinger breakout gate ---------------------
+// The grab candle must punch UP THROUGH the top band in this one bar:
+// open below the upper band, close above it.
+bool bbBreakout = open < upper and close > upper
+
+bool signal = grab and bbBreakout
+
+// --------------------------- drawing ---------------------------------
+plotshape(signal, title = "Buy (BB breakout grab)", style = shape.triangleup,
+     location = location.belowbar, color = color.aqua, size = size.small, text = "BUY")
+
+if signal and drawLevels
+    // the grab candle(s) -> the entry
+    int grabStart = swallow3 ? bar_index - 2 : bar_index - 1
+    line.new(grabStart, low, bar_index, low, xloc = xloc.bar_index,
+         color = color.aqua, style = line.style_dotted, width = 1)
+    label.new(bar_index, high, "GRAB ▲ (BB)", xloc = xloc.bar_index,
+         yloc = yloc.abovebar, style = label.style_label_down,
+         color = color.new(color.aqua, 0), textcolor = color.black, size = size.small)
+
+// --------------------------- alerts ----------------------------------
+alertcondition(signal, "Bollinger Breakout Grab",
+     "Liquidity grab closing above the upper Bollinger band: BUY")
