@@ -500,11 +500,14 @@ def _migrate_signals_schema():
     print("  (migrated signals.csv to the current column layout)")
 
 
-def log_signal(kind, ticker, timeframe, df, bot="scan_all", direction="long"):
+def log_signal(kind, ticker, timeframe, df, bot="scan_all", direction="long", id_prefix=""):
     """Record one match in signals.csv: its entry (close) price and the candle it
     formed in, keyed by a unique signal_id. `bot` names which of the scanners
     found it (e.g. stock_mega, crypto_intraday) so per-bot totals can be tallied.
     `direction` is "long" (bullish grab) or "short" (bearish breakdown).
+    `id_prefix` namespaces the signal_id (default "" = unchanged) so a bot running a
+    DIFFERENT pattern on the same ticker/candle -- e.g. the RSI-divergence bot -- gets
+    its own rows instead of colliding with the plain grab bot's.
     Re-logging the same candle is a no-op, so re-runs and overlapping schedules
     can't create duplicates."""
     try:
@@ -525,7 +528,7 @@ def log_signal(kind, ticker, timeframe, df, bot="scan_all", direction="long"):
     # Long IDs keep their original shape so historical rows never re-log; shorts
     # get a SHORT_ namespace so a green and red signal on the same candle coexist.
     prefix = "SHORT_" if direction == "short" else ""
-    signal_id = f"{prefix}{kind}_{ticker}_{timeframe}_{candle_date}"
+    signal_id = f"{id_prefix}{prefix}{kind}_{ticker}_{timeframe}_{candle_date}"
     _migrate_signals_schema()   # align an older file before we append to it
     if signal_id in _existing_signal_ids():
         return
