@@ -136,9 +136,14 @@ def divergence_grab(df):
         rsi_hl = rvals[cur] > rvals[prev]           # RSI higher low
         both_os = rvals[cur] < OS_LEVEL and rvals[prev] < OS_LEVEL
         if price_ll and rsi_hl and both_os:
-            strong = bool(rvals[cur] < STRONG_LEVEL and rvals[prev] < STRONG_LEVEL)
-            info = {"d1": (int(prev), float(lows[prev]), float(rvals[prev])),
-                    "d2": (int(cur),  float(lows[cur]),  float(rvals[cur]))}
+            # No THIRD bottom between the second low and the grab: nothing may dip
+            # below d2's low until the grab candle itself. If a lower low prints in
+            # between, that's a third bottom -> not accepted.
+            between = lows[cur + 1:last]            # bars strictly between d2 and the grab
+            if between.size == 0 or float(between.min()) >= lows[cur]:
+                strong = bool(rvals[cur] < STRONG_LEVEL and rvals[prev] < STRONG_LEVEL)
+                info = {"d1": (int(prev), float(lows[prev]), float(rvals[prev])),
+                        "d2": (int(cur),  float(lows[cur]),  float(rvals[cur]))}
 
     if strong is None:
         return (False, False, None)
