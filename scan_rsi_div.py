@@ -124,17 +124,14 @@ def divergence_grab(df):
     rvals = rsi.values
     last = len(df) - 1
 
-    # Walk pivot pairs newest-first; the divergence's second (confirming) low must
-    # sit within GRAB_WINDOW bars of the grab candle.
+    # Only the LAST TWO bottoms count. d2 (the right low) must be the MOST RECENT
+    # pivot low: if another RSI bottom printed after it, this isn't a fresh
+    # last-two-bottoms setup, so we don't signal. No fallback to older pairs.
     strong = None
     info = None
-    for j in range(len(piv) - 1, 0, -1):
-        cur, prev = piv[j], piv[j - 1]
-        if (last - cur) > GRAB_WINDOW:
-            break                                   # older pairs are further still
-        gap = cur - prev
-        if gap < MIN_GAP or gap > MAX_GAP:
-            continue
+    cur, prev = piv[-1], piv[-2]                     # newest two pivot lows
+    gap = cur - prev
+    if (last - cur) <= GRAB_WINDOW and MIN_GAP <= gap <= MAX_GAP:
         price_ll = lows[cur] < lows[prev]           # price lower low (wick)
         rsi_hl = rvals[cur] > rvals[prev]           # RSI higher low
         both_os = rvals[cur] < OS_LEVEL and rvals[prev] < OS_LEVEL
@@ -142,7 +139,6 @@ def divergence_grab(df):
             strong = bool(rvals[cur] < STRONG_LEVEL and rvals[prev] < STRONG_LEVEL)
             info = {"d1": (int(prev), float(lows[prev]), float(rvals[prev])),
                     "d2": (int(cur),  float(lows[cur]),  float(rvals[cur]))}
-            break
 
     if strong is None:
         return (False, False, None)
