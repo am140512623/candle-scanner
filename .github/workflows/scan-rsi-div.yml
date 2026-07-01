@@ -6,23 +6,28 @@ name: RSI oversold-divergence → grab scan
 #
 # Sharded two ways so no single run is huge:
 #   segment -> which universe slice (commodities / indices / crypto / stock_*).
-#   frames  -> which timeframe(s) just closed ("" = all; each frame self-skips on
-#              its off-days, and a 90-min freshness gate blocks double-alerts).
+#   frames  -> which timeframe(s) to scan ("" = all; each frame self-skips on its
+#              off-days, and a 90-min freshness gate blocks double-alerts).
 #
-# WHY NO built-in `schedule:` -- like the other bots, trigger this EXTERNALLY with a
-# punctual scheduler (cron-job.org) that POSTs to the workflow_dispatch API, so cron
-# lateness never causes missed/late alerts. One hourly POST per segment covers it:
-#   POST https://api.github.com/repos/am140512623/candle-scanner/actions/workflows/scan-rsi-div.yml/dispatches
-#   Headers: Authorization: Bearer <PAT with actions:write>
-#            Accept: application/vnd.github+json
-#            X-GitHub-Api-Version: 2022-11-28
-#   Body:    {"ref":"main","inputs":{"segment":"commodities","frames":""}}
-# The light slices (commodities/indices/crypto) can run hourly; the heavy stock
-# tiers are cheaper to POST only around the daily/weekly closes (frames:"1D" etc).
+# SCHEDULING -- this bot self-runs on GitHub's built-in cron. Unlike the other
+# bots, that's fine here: the freshness window is 90 min (RSI_FRESHNESS_MIN), and
+# GitHub cron is only ever a few minutes late, so a late run still lands inside the
+# window and alerts exactly once. Two crons:
+#   * hourly  '0 * * * *'  -> the LIGHT slices (commodities, indices, crypto),
+#                             all frames. Small universes, cheap to run every hour.
+#   * daily   '5 0 * * *'  -> the HEAVY stock cap tiers, DAILY-and-up frames only
+#                             (1D..1Y). We skip 1H/4H.. on thousands of stocks --
+#                             that would mean pulling 1h candles for the whole
+#                             market every hour, which isn't practical.
+# Manual runs (workflow_dispatch) still scan ONE chosen segment + frames, handy for
+# testing or a one-off backfill.
 #
 # SECRETS required: RSI_DIV_BOT_TOKEN (this bot's own Telegram token) and,
 # optionally, RSI_DIV_CHAT_ID (comma-separated recipients; defaults to A + m).
 on:
+  schedule:
+    - cron: "0 * * * *"     # hourly  -> commodities / indices / crypto (all frames)
+    - cron: "5 0 * * *"     # 00:05 UTC daily -> stock tiers (1D..1Y only)
   workflow_dispatch:
     inputs:
       segment:
@@ -39,6 +44,18 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write    # so logged signals can be committed back to the repo
+    strategy:
+      fail-fast: false
+      # Which segments run depends on how the workflow fired:
+      #   manual        -> just the one segment you chose
+      #   00:05 daily   -> the four stock cap tiers
+      #   hourly        -> the three light slices
+      matrix:
+        segment: ${{ github.event_name == 'workflow_dispatch'
+          && fromJSON(format('["{0}"]', inputs.segment))
+          || (github.event.schedule == '5 0 * * *'
+            && fromJSON('["stock_mega","stock_large","stock_mid","stock_small"]')
+            || fromJSON('["commodities","indices","crypto"]')) }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -47,8 +64,14 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python scan_rsi_div.py
         env:
-          RSI_SEGMENT: ${{ inputs.segment }}
-          RSI_FRAMES: ${{ inputs.frames }}
+          RSI_SEGMENT: ${{ matrix.segment }}
+          # Manual = your chosen frames; daily stock run = daily-and-up only (no
+          # intraday on the whole stock market); hourly light run = all frames.
+          RSI_FRAMES: ${{ github.event_name == 'workflow_dispatch'
+            && inputs.frames
+            || (github.event.schedule == '5 0 * * *'
+              && '1D,2D,3D,4D,1W,1M,3M,6M,1Y'
+              || '') }}
           RSI_DIV_BOT_TOKEN: ${{ secrets.RSI_DIV_BOT_TOKEN }}
           RSI_DIV_CHAT_ID: ${{ secrets.RSI_DIV_CHAT_ID }}
       - name: Save logged signals
