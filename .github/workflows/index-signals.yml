@@ -21,6 +21,10 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
+      - name: Pull private results
+        run: bash .github/scripts/pull_data.sh
+        env:
+          DATA_TOKEN: ${{ secrets.DATA_TOKEN }}
       - run: python index_signals.py --print
         env:
           US_INDEX_BOT_TOKEN: ${{ secrets.US_INDEX_BOT_TOKEN }}
@@ -28,3 +32,5 @@ jobs:
       - name: Save seen-signals state
         if: always()
         run: bash .github/scripts/commit_data.sh .index_signals_seen.txt
+        env:
+          DATA_TOKEN: ${{ secrets.DATA_TOKEN }}

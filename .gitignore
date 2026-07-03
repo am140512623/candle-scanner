@@ -8,3 +8,15 @@ bot sec.txt
 pat.txt
 *sec*.txt
 *.token
+api.txt
+apitxt
+*api*.txt
+*token*.txt
+*.key
+
+# Result/state data -- these now live ONLY in the private data repo
+# (candle-data). Workflows pull them at runtime; never commit them here.
+signals.csv
+results.csv
+summary.csv
+.index_signals_seen.txt

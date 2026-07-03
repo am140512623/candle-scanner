@@ -48,6 +48,10 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
+      - name: Pull private results
+        run: bash .github/scripts/pull_data.sh
+        env:
+          DATA_TOKEN: ${{ secrets.DATA_TOKEN }}
       - run: python scan_crypto.py
         env:
           CRYPTO_FRAMES: ${{ inputs.frames }}
@@ -55,3 +59,5 @@ jobs:
       - name: Save logged signals
         if: always()
         run: bash .github/scripts/commit_data.sh signals.csv
+        env:
+          DATA_TOKEN: ${{ secrets.DATA_TOKEN }}
