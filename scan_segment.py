@@ -4,6 +4,7 @@ Segmented Liquidity-Grab scanners -- ONE engine, many bots.
 Each bot runs THIS script and just picks a different slice of the market with the
 SEGMENT environment variable. All of these scan the WEEKLY (and MONTHLY) candle:
 
+    crypto_top300_weekly  crypto rank 1 - 300 on the weekly frame -> its own bot
     crypto_top1000   crypto market-cap rank 300 - 1000   -> your crypto bot
     stock_mega       US stocks  > $200B                  -> your stock bot
     stock_large      US stocks  $10B - $200B             -> your stock bot
@@ -37,6 +38,7 @@ DEFAULT_CHATS = ["7788611624", "6173185769"]
 #   crypto -> "rank": (low, high) market-cap rank, inclusive low / exclusive high
 #   stock  -> "cap":  (low, high) USD market cap,  inclusive low / exclusive high (None = no bound)
 SEGMENTS = {
+    "crypto_top300_weekly": {"asset": "crypto", "rank": (1, 300),   "label": "Crypto Top 300 (Weekly)"},
     "crypto_top1000": {"asset": "crypto", "rank": (300, 1000),      "label": "Crypto rank 300-1000"},
     "stock_mega":     {"asset": "stock",  "cap": (200 * B, None),   "label": "Mega-Cap Stocks (>$200B)"},
     "stock_large":    {"asset": "stock",  "cap": (10 * B, 200 * B), "label": "Large-Cap Stocks ($10B-$200B)"},
