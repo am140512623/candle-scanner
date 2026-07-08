@@ -55,6 +55,11 @@ jobs:
       - run: python scan_crypto.py
         env:
           CRYPTO_FRAMES: ${{ inputs.frames }}
+          # 90 min (matches the BB bot). The 300-coin download is slow, so the
+          # default 30-min window can time out and drop a just-closed candle as
+          # "stale" before the scan reaches it -- a slightly-late trigger or slow
+          # run then misses the alert. 90 min absorbs that.
+          CRYPTO_FRESHNESS_MIN: "90"
           CRYPTO_BOT_TOKEN: ${{ secrets.CRYPTO_BOT_TOKEN }}
       - name: Save logged signals
         if: always()
