@@ -383,14 +383,22 @@ def _alert(kind, ticker, tf_label, d, strong, info, bot):
            f"RSI oversold divergence → liquidity grab (LONG){extra}\n"
            f"Yahoo: {yahoo}\nTradingView: {tv}")
     print("  " + msg.splitlines()[0])
-    # RSIDIV_ namespace so these rows never collide with the plain grab bot's, even
-    # on the same ticker/timeframe/candle.
-    s.log_signal(kind, ticker, tf_label, d, bot=bot, direction="long", id_prefix="RSIDIV_")
+    chart_path = None
     try:
         chart_path = save_div_chart(ticker, kind, d, tf_label, strong, info)
-        s.send_telegram_photo(chart_path, msg)
     except Exception as e:
         print(f"    (could not draw chart: {e})")
+    # RSIDIV_ namespace so these rows never collide with the plain grab bot's, even
+    # on the same ticker/timeframe/candle.
+    s.log_signal(kind, ticker, tf_label, d, bot=bot, direction="long",
+                 id_prefix="RSIDIV_", chart=s.chart_rel_path(chart_path))
+    if chart_path:
+        try:
+            s.send_telegram_photo(chart_path, msg)
+        except Exception as e:
+            print(f"    (could not send photo: {e})")
+            s.send_telegram_alert(msg)
+    else:
         s.send_telegram_alert(msg)
 
 

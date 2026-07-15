@@ -446,7 +446,7 @@ def send_telegram_photo(image_path, caption):
 SIGNALS_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signals.csv")
 SIGNAL_FIELDS = [
     "signal_id", "bot", "alert_date", "candle_date", "kind", "direction", "ticker",
-    "timeframe", "entry_close", "stop_level",
+    "timeframe", "entry_close", "stop_level", "chart",
 ]
 
 
@@ -500,7 +500,8 @@ def _migrate_signals_schema():
     print("  (migrated signals.csv to the current column layout)")
 
 
-def log_signal(kind, ticker, timeframe, df, bot="scan_all", direction="long", id_prefix=""):
+def log_signal(kind, ticker, timeframe, df, bot="scan_all", direction="long",
+               id_prefix="", chart=""):
     """Record one match in signals.csv: its entry (close) price and the candle it
     formed in, keyed by a unique signal_id. `bot` names which of the scanners
     found it (e.g. stock_mega, crypto_intraday) so per-bot totals can be tallied.
@@ -508,6 +509,9 @@ def log_signal(kind, ticker, timeframe, df, bot="scan_all", direction="long", id
     `id_prefix` namespaces the signal_id (default "" = unchanged) so a bot running a
     DIFFERENT pattern on the same ticker/candle -- e.g. the RSI-divergence bot -- gets
     its own rows instead of colliding with the plain grab bot's.
+    `chart` is the repo-relative path to the saved chart PNG (blank if none) so a
+    later review can show each signal's picture next to its row -- see
+    chart_rel_path(). It's purely a reference; an empty value never breaks anything.
     Re-logging the same candle is a no-op, so re-runs and overlapping schedules
     can't create duplicates."""
     try:
@@ -548,6 +552,7 @@ def log_signal(kind, ticker, timeframe, df, bot="scan_all", direction="long", id
             "timeframe": timeframe,
             "entry_close": f"{entry_close:.10g}",
             "stop_level": f"{stop_level:.10g}",
+            "chart": chart or "",
         })
     print(f"    logged signal {signal_id} @ {entry_close:.6g}")
 
@@ -557,6 +562,21 @@ def log_signal(kind, ticker, timeframe, df, bot="scan_all", direction="long", id
 # ---------------------------------------------------------------------------
 def _safe_name(text):
     return "".join(c if c.isalnum() else "_" for c in text)
+
+
+def chart_rel_path(abs_path):
+    """Turn an absolute saved-chart path into a repo-relative, forward-slash path
+    (e.g. 'charts/WEEKLY_2026-06-08/WEEKLY_STOCK_GLD_2026-06-08.png') for storing in
+    signals.csv. Blank in -> blank out; a failure is swallowed to '' so logging a
+    signal is never blocked by a path hiccup. CHART_DIR sits directly under the repo
+    root, so its parent is that root."""
+    if not abs_path:
+        return ""
+    try:
+        rel = os.path.relpath(abs_path, os.path.dirname(CHART_DIR))
+    except (ValueError, TypeError):
+        return ""
+    return rel.replace(os.sep, "/")
 
 
 def save_chart(ticker, kind, df, timeframe="WEEKLY", bars=40, direction="long"):
@@ -780,15 +800,23 @@ def main():
                    f"Yahoo: {yahoo}\nTradingView: {tradingview}")
             print("  " + msg)
             email_lines.append(msg)
-            log_signal(kind, t, tf_label, df, direction=direction)
+            chart_path = None
             try:
                 chart_path = save_chart(t, kind, df, tf_label, direction=direction)
                 print(f"    chart -> {chart_path}")
                 chart_folders.add(os.path.dirname(chart_path))
                 chart_paths.append(chart_path)
-                send_telegram_photo(chart_path, msg)
             except Exception as e:
                 print(f"    (could not draw chart: {e})")
+            log_signal(kind, t, tf_label, df, direction=direction,
+                       chart=chart_rel_path(chart_path))
+            if chart_path:
+                try:
+                    send_telegram_photo(chart_path, msg)
+                except Exception as e:
+                    print(f"    (could not send photo: {e})")
+                    send_telegram_alert(msg)
+            else:
                 send_telegram_alert(msg)
         # Email one summary with all charts attached.
         today = datetime.date.today()
