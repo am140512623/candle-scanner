@@ -1,5 +1,12 @@
-name: Bollinger breakout → grab scan
+name: Bollinger breakout + lower-touch → grab scan
 
+# Runs TWO patterns on the same trigger/segments/frames (additive -- neither
+# affects the other):
+#   * scan_bb_grab.py         -- Bot #7, the ORIGINAL upper-band breakout (unchanged).
+#   * scan_bb_lower_touch.py  -- Bot #8, the lower-band-touch pattern (added).
+# Both log into signals.csv (BBGRAB_ / BBLOWER_ namespaces) and, by default, alert
+# into the same Bollinger Telegram bot.
+#
 # Bot #7 -- Bollinger-breakout -> liquidity-grab (LONG only), scanned across EVERY
 # asset class (commodities, US index ETFs, top-100 crypto, and all US stock cap
 # tiers) on every frame from 4H to 1Y (the 1H frame is skipped). Twin of
@@ -60,12 +67,26 @@ jobs:
         run: bash .github/scripts/pull_data.sh
         env:
           DATA_TOKEN: ${{ secrets.DATA_TOKEN }}
+      # Old breakout signals -- UNCHANGED. Runs exactly as before.
       - run: python scan_bb_grab.py
         env:
           BB_SEGMENT: ${{ matrix.segment }}
           BB_FRAMES: ${{ inputs.frames }}
           BB_GRAB_BOT_TOKEN: ${{ secrets.BB_GRAB_BOT_TOKEN }}
           BB_GRAB_CHAT_ID: ${{ secrets.BB_GRAB_CHAT_ID }}
+      # ADDITIVE: the lower-band-touch pattern, same segments/frames, its own
+      # BBLOWER_ log namespace. Sends into the SAME bot by default. Runs even if
+      # the breakout step above found nothing; the two never interfere.
+      - name: Lower-band-touch scan
+        if: always()
+        run: python scan_bb_lower_touch.py
+        env:
+          BB_SEGMENT: ${{ matrix.segment }}
+          BB_FRAMES: ${{ inputs.frames }}
+          BB_GRAB_BOT_TOKEN: ${{ secrets.BB_GRAB_BOT_TOKEN }}
+          BB_GRAB_CHAT_ID: ${{ secrets.BB_GRAB_CHAT_ID }}
+          BB_LOWER_BOT_TOKEN: ${{ secrets.BB_LOWER_BOT_TOKEN }}
+          BB_LOWER_CHAT_ID: ${{ secrets.BB_LOWER_CHAT_ID }}
       - name: Save logged signals
         if: always()
         run: bash .github/scripts/commit_data.sh signals.csv
