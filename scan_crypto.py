@@ -244,12 +244,20 @@ def run(crypto, catalog=INTRADAY_FRAMES, bot="crypto_intraday"):
             msg = (f"[{tf['label']}] MATCH: {t} (CRYPTO) formed your {s.pattern_name(direction)} pattern!\n"
                    f"Yahoo: {yahoo}\nTradingView: {tv}")
             print("  " + msg.splitlines()[0])
-            s.log_signal("CRYPTO", t, tf["label"], d, bot=bot, direction=direction)
+            chart_path = None
             try:
                 chart_path = s.save_chart(t, "CRYPTO", d, tf["label"], direction=direction)
-                s.send_telegram_photo(chart_path, msg)
             except Exception as e:
                 print(f"    (could not draw chart: {e})")
+            s.log_signal("CRYPTO", t, tf["label"], d, bot=bot, direction=direction,
+                         chart=s.chart_rel_path(chart_path))
+            if chart_path:
+                try:
+                    s.send_telegram_photo(chart_path, msg)
+                except Exception as e:
+                    print(f"    (could not send photo: {e})")
+                    s.send_telegram_alert(msg)
+            else:
                 s.send_telegram_alert(msg)
 
     print("\n" + "=" * 40)

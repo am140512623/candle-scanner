@@ -65,7 +65,7 @@ HORIZONS = [("1d", 1), ("3d", 3), ("7d", 7), ("30d", 30), ("90d", 90), ("180d", 
 
 RESULT_FIELDS = (
     ["signal_id", "bot", "alert_date", "candle_date", "kind", "direction", "ticker",
-     "timeframe", "entry_close", "stop_level"]
+     "timeframe", "entry_close", "stop_level", "chart"]
     + [f"chg_{name}" for name, _ in HORIZONS]
     + ["last_chg", "best_target_pct", "realized_pct", "tp_date", "exit_date",
        "stop_date", "stop_chg", "result", "status"]

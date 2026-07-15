@@ -111,12 +111,20 @@ def scan_segment(universe, label, kind, asset, bot):
             msg = (f"[{tf['label']}] MATCH: {t} ({k}) formed your {s.pattern_name(direction)} pattern!\n"
                    f"Yahoo: {yahoo}\nTradingView: {tv}")
             print("  " + msg.splitlines()[0])
-            s.log_signal(k, t, tf["label"], df, bot=bot, direction=direction)
+            chart_path = None
             try:
                 chart_path = s.save_chart(t, k, df, tf["label"], direction=direction)
-                s.send_telegram_photo(chart_path, msg)
             except Exception as e:
                 print(f"    (could not draw chart: {e})")
+            s.log_signal(k, t, tf["label"], df, bot=bot, direction=direction,
+                         chart=s.chart_rel_path(chart_path))
+            if chart_path:
+                try:
+                    s.send_telegram_photo(chart_path, msg)
+                except Exception as e:
+                    print(f"    (could not send photo: {e})")
+                    s.send_telegram_alert(msg)
+            else:
                 s.send_telegram_alert(msg)
     return total
 

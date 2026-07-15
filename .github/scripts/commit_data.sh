@@ -16,6 +16,12 @@ if [ -z "${DATA_TOKEN:-}" ] || [ ! -d "$DATA_DIR/.git" ]; then
   exit 0
 fi
 
+# Best-effort: archive this run's chart PNGs to the separate `charts` branch so the
+# `chart` links in signals.csv resolve at review time. It's isolated and always
+# exits 0, so it can never affect the CSV persistence below. Runs before the CSV
+# push (which may early-exit when nothing changed) so charts are saved regardless.
+bash "$(dirname "$0")/commit_charts.sh" || true
+
 # Copy the freshly-updated workspace files into the data-repo clone.
 for f in "$@"; do
   [ -e "$f" ] && cp "$f" "$DATA_DIR/$f"

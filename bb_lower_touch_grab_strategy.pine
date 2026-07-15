@@ -1,0 +1,84 @@
+//@version=6
+// =====================================================================
+// Lower-Band Touch  ->  Liquidity Grab   (BACKTEST STRATEGY)
+// ---------------------------------------------------------------------
+// Same pattern as bb_lower_touch_grab.pine, run as a strategy so the
+// "Strategy Tester" panel shows net P/L, win rate, drawdown and trades.
+//
+//   SIGNAL : bullish "swallow" liquidity grab whose trigger candle's
+//            range TOUCHES the LOWER Bollinger band (low <= lower AND
+//            high >= lower -- the bottom line passes through the candle).
+//   ENTRY  : at the close of the signal bar (market order).
+//   STOP   : just below the grab candle's swept low.
+//   TARGET : a reward:risk multiple of the stop distance (default 2:1).
+// =====================================================================
+strategy("Lower-Band Touch Grab — Strategy", overlay = true,
+     initial_capital  = 10000,
+     default_qty_type = strategy.percent_of_equity, default_qty_value = 100,
+     commission_type  = strategy.commission.percent, commission_value = 0.04,
+     slippage = 1, pyramiding = 0,
+     max_bars_back = 1000, max_lines_count = 500, max_labels_count = 500)
+
+// ----------------------------- inputs --------------------------------
+bbLen   = input.int(20,   "Bollinger length",      minval = 2,   group = "Bollinger Bands")
+bbMult  = input.float(2.0,"Bollinger StdDev mult", minval = 0.1, group = "Bollinger Bands")
+
+rr      = input.float(2.0,"Reward : risk target", minval = 0.1, group = "Trade management")
+stopPad = input.float(0.0,"Extra stop padding below the swept low (%)",
+     minval = 0, group = "Trade management") / 100.0
+
+// startDate/endDate let you backtest a slice of history.
+useWindow = input.bool(false, "Limit to a date window", group = "Backtest window")
+startDate = input.time(timestamp("2018-01-01T00:00"), "From", group = "Backtest window")
+endDate   = input.time(timestamp("2100-01-01T00:00"), "To",   group = "Backtest window")
+inWindow  = not useWindow or (time >= startDate and time <= endDate)
+
+// -------------------------- Bollinger Bands --------------------------
+basis = ta.sma(close, bbLen)
+dev   = bbMult * ta.stdev(close, bbLen)
+upper = basis + dev
+lower = basis - dev
+
+pU = plot(upper, "Upper", color = color.new(color.red, 0),    linewidth = 1)
+pB = plot(basis, "Basis", color = color.new(color.orange, 0), linewidth = 1)
+pL = plot(lower, "Lower", color = color.new(color.blue, 0),   linewidth = 1)
+fill(pU, pL, color = color.new(color.gray, 92))
+
+// --------------------- liquidity grab (swallow) ----------------------
+bool triggerGreen = close > open
+float bodyTop     = math.max(open, close)
+
+bool green1   = close[1] > open[1]
+float refTop1 = math.max(open[1], close[1])
+bool swallow2 = triggerGreen and green1 and bodyTop >= refTop1 and low <= low[1]
+
+bool green2   = close[2] > open[2]
+float refTop2 = math.max(open[2], close[2])
+bool swallow3 = triggerGreen and green1 and green2 and
+     bodyTop >= math.max(refTop1, refTop2) and low <= math.min(low[1], low[2])
+
+bool grab = swallow2 or swallow3
+
+// ----------------------- lower-band touch gate -----------------------
+// The grab candle's range must TOUCH the lower band: the bottom line
+// passes through the candle (low at/below it, high at/above it).
+bool lowerTouch = low <= lower and high >= lower
+bool signal     = grab and lowerTouch and inWindow
+
+// --------------------------- the trade -------------------------------
+// Stop = below the grab candle's swept low (2-candle: this bar's low;
+// 3-candle: the lower of the two swept lows). Target = rr * risk above entry.
+float grabLow = swallow3 ? math.min(low, math.min(low[1], low[2])) : math.min(low, low[1])
+
+if signal and strategy.position_size == 0
+    float entry  = close
+    float stop   = grabLow * (1.0 - stopPad)
+    float risk   = entry - stop
+    if risk > 0
+        float target = entry + rr * risk
+        strategy.entry("Long", strategy.long)
+        strategy.exit("Exit", from_entry = "Long", stop = stop, limit = target)
+
+// --------------------------- drawing ---------------------------------
+plotshape(signal, title = "Signal", style = shape.triangleup,
+     location = location.belowbar, color = color.lime, size = size.small, text = "BUY")

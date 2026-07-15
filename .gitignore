@@ -20,3 +20,9 @@ signals.csv
 results.csv
 summary.csv
 .index_signals_seen.txt
+
+# Local backtest / research outputs -- regenerated on demand, not source.
+*.log
+*_trades.csv
+*_equity.png
+gallery.html
