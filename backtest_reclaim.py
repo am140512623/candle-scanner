@@ -1,30 +1,41 @@
 """
-Batch backtest -- GRAB -> OPPOSITE CANDLE -> RECLAIM (LONG), fixed 2:1 TP/SL.
+Batch backtest -- GRAB -> REVERSE CANDLE -> RECLAIM (LONG), fixed 2:1 TP/SL.
 
-Tests the pattern added on top of the two Bollinger bots (see bb_reclaim.py), and
--- the point of this script -- tests it AGAINST the plain grab it is built on, so
-you can see whether waiting for the reclaim actually earns its keep.
+The pattern is STANDALONE -- it is the liquidity grab, then a reverse candle right
+after it, then entry when a candle closes above that reverse candle's open. The
+Bollinger band is not really part of it. So the ungated arms below are the ones
+that matter; the band-gated arms are here only to show what the band does to it.
 
-Four arms are simulated on the SAME bars, same universe, same stop convention:
+Six arms, simulated on the SAME bars, same universe, same stop convention:
 
-    ① grab_upper       plain upper-band breakout grab      (baseline)
-    ② grab_lower       plain lower-band touch grab         (baseline)
-    ③ reclaim_upper    ① + opposite candle + reclaim
-    ④ reclaim_lower    ② + opposite candle + reclaim
+    ① grab            plain liquidity grab, NO band gate        (the baseline)
+    ② reclaim         ① + reverse candle + reclaim              (THE PATTERN)
+    ③ reclaim_green   ② but the signal candle must be GREEN     (see below)
+    ④ reclaim_upper   ② + the grab must break the upper band
+    ⑤ reclaim_lower   ② + the grab must touch the lower band
+    ⑥ grab_upper      plain upper-band grab, for reference
 
-③ is a strict SUBSET of ①'s setups (same grabs, minus the ones that never printed
-an opposite candle or never reclaimed), and ④ of ②. So comparing ③ vs ① and ④ vs ②
-answers the real question: does the reclaim filter improve expectancy, or does it
-just throw away trades and arrive late?
+② is a strict SUBSET of ①'s setups (same grabs, minus the ones that never printed
+a reverse candle or never reclaimed). So ② vs ① answers the real question: does
+waiting for the reclaim improve expectancy, or does it just throw away trades and
+enter later and worse? And ④⑤ vs ② answers whether the band gate adds anything at
+all, or only costs setups.
+
+③ exists because the spec is ambiguous. "اي شمعة" (ANY candle closing above the
+reverse candle's open) is what the live bots do; "a similar colour candle" would
+require that closing candle to be GREEN like the grab. ③ keeps waiting for the
+first GREEN close above the level, skipping red closes above it. Running both
+settles which rule is actually better instead of guessing.
 
 TRADE (identical rules for every arm, so the comparison is like-for-like):
-    ENTRY  = close of the SIGNAL bar. For ①② that's the grab candle; for ③④ it's
-             the candle that reclaimed the opposite candle's open -- which is the
-             whole point: the reclaim enters LATER and therefore worse.
+    ENTRY  = close of the SIGNAL bar. For the grab arms that's the grab candle;
+             for the reclaim arms it's the candle that closed above the reverse
+             candle's open -- which is the whole point: the reclaim enters LATER
+             and therefore worse, and has to earn that back.
     STOP   = STOP_MODE=grab     -> the grab candle's swept low (default; matches
                                    backtest_lower_touch.py so numbers line up)
-             STOP_MODE=pullback -> the lowest low from the opposite candle to the
-                                   signal bar (tighter; ③④ only)
+             STOP_MODE=pullback -> the lowest low from the reverse candle to the
+                                   signal bar (tighter; reclaim arms only)
     TARGET = entry + RR * (entry - stop).
     Exit walks forward bar-by-bar; whichever of stop/target is reached first wins.
     A bar covering BOTH is scored a LOSS (we can't know intrabar order).
@@ -43,7 +54,7 @@ Env knobs:
     RR=2.0                  reward:risk target
     STOP_MODE=grab          grab | pullback
     STOP_PAD_PCT=0.0        extra stop distance below the low, in %
-    MAX_WAIT=10             candles the reclaim may take (matches bb_reclaim)
+    MAX_WAIT=10             candles the reclaim may take (matches reclaim_pattern)
     BT_FRAMES=1D            which frames to test
     BT_DAILY_PERIOD=max     history for the 1d base
     BT_LIMIT=0              cap the universe to the first N tickers (0 = all)
@@ -79,7 +90,8 @@ FRAMES_CATALOG = [
 ]
 BASE_PERIODS = {"1h": "60d", "1d": os.environ.get("BT_DAILY_PERIOD", "max")}
 
-ARMS = ["grab_upper", "grab_lower", "reclaim_upper", "reclaim_lower"]
+ARMS = ["grab", "reclaim", "reclaim_green",
+        "reclaim_upper", "reclaim_lower", "grab_upper"]
 
 
 def selected_frames():
@@ -151,29 +163,50 @@ def find_signals(df):
     for g, swept_low in _grabs(df).items():
         if np.isnan(upper[g]) or np.isnan(lower[g]):
             continue
-        # Each bot's band gate, on the grab candle.
-        gates = {
-            "upper": o[g] < upper[g] and c[g] > upper[g],
-            "lower": l[g] <= lower[g] and h[g] >= lower[g],
-        }
-        for band, ok in gates.items():
-            if not ok:
-                continue
-            # --- baseline arm: take the grab itself ---
-            _add(f"grab_{band}", g, c[g], swept_low, g)
+        # The band gates, on the grab candle. The pattern itself does NOT use these
+        # -- they only select which subset of grabs the gated arms are allowed.
+        in_upper = o[g] < upper[g] and c[g] > upper[g]
+        in_lower = l[g] <= lower[g] and h[g] >= lower[g]
 
-            # --- reclaim arm: opposite candle right after, then first close above
-            #     its open, within MAX_WAIT bars ---
-            r = g + 1
-            if r >= len(df) or not (c[r] < o[r]):
-                continue                        # next candle isn't opposite
-            level = o[r]
-            for j in range(r + 1, min(r + MAX_WAIT, len(df) - 1) + 1):
-                if c[j] > level:                # FIRST close above -> the signal
-                    low_for_stop = (min(l[r:j + 1]) if STOP_MODE == "pullback"
-                                    else swept_low)
-                    _add(f"reclaim_{band}", j, c[j], low_for_stop, g)
+        # --- baseline: take the grab itself, ungated ---
+        _add("grab", g, c[g], swept_low, g)
+        if in_upper:
+            _add("grab_upper", g, c[g], swept_low, g)
+
+        # --- the pattern: reverse candle right after the grab, then a close back
+        #     above that candle's open, within MAX_WAIT bars ---
+        r = g + 1
+        if r >= len(df) or not (c[r] < o[r]):
+            continue                            # next candle isn't the reverse one
+        level = o[r]
+
+        first_close = None                      # "any candle" -- what the bots do
+        first_green = None                      # "similar colour candle" reading
+        for j in range(r + 1, min(r + MAX_WAIT, len(df) - 1) + 1):
+            if c[j] > level:
+                if first_close is None:
+                    first_close = j
+                if c[j] > o[j]:                 # green, same colour as the grab
+                    first_green = j
                     break
+                # a RED close above the level: not a signal for reclaim_green,
+                # which keeps waiting for a green one.
+            if first_close is not None and first_green is not None:
+                break
+
+        def _stop_low(j):
+            return min(l[r:j + 1]) if STOP_MODE == "pullback" else swept_low
+
+        if first_close is not None:
+            j = first_close
+            _add("reclaim", j, c[j], _stop_low(j), g)
+            if in_upper:
+                _add("reclaim_upper", j, c[j], _stop_low(j), g)
+            if in_lower:
+                _add("reclaim_lower", j, c[j], _stop_low(j), g)
+        if first_green is not None:
+            j = first_green
+            _add("reclaim_green", j, c[j], _stop_low(j), g)
     return res
 
 
@@ -249,21 +282,29 @@ def report(by_arm, by_tf):
     print("-" * 92)
     print(f"Break-even win rate at {RR:g}:1 is {be:.1f}%.")
 
-    # The comparison this whole script exists for.
-    print("\nDoes waiting for the reclaim help?  (reclaim vs the grab it filters)")
-    for band in ("upper", "lower"):
-        b = _stats(by_arm[f"grab_{band}"])
-        r = _stats(by_arm[f"reclaim_{band}"])
+    def compare(title, base_arm, test_arm):
+        b, r = _stats(by_arm[base_arm]), _stats(by_arm[test_arm])
         if not b["resolved"] or not r["resolved"]:
-            print(f"  {band}: not enough resolved trades to compare.")
-            continue
+            print(f"  {title}: not enough resolved trades to compare.")
+            return
         d_exp = r["exp"] - b["exp"]
-        kept = 100 * r["resolved"] / b["resolved"]
         verdict = ("BETTER" if d_exp > 0.02 else
                    "WORSE" if d_exp < -0.02 else "about the same")
-        print(f"  {band:<6}: exp {b['exp']:+.3f}R -> {r['exp']:+.3f}R "
+        print(f"  {title:<34} exp {b['exp']:+.3f}R -> {r['exp']:+.3f}R "
               f"({d_exp:+.3f}R, {verdict}) | win {b['wr']:.1f}% -> {r['wr']:.1f}% "
-              f"| keeps {kept:.0f}% of the setups ({r['resolved']} of {b['resolved']})")
+              f"| keeps {100 * r['resolved'] / b['resolved']:>3.0f}% of setups "
+              f"({r['resolved']} of {b['resolved']})")
+
+    # The comparison this whole script exists for: the pattern, on its own.
+    print("\n1) Does waiting for the reclaim help?  (vs the plain grab it filters)")
+    compare("grab -> reclaim", "grab", "reclaim")
+
+    print("\n2) Which reading of the signal candle is right?")
+    compare("any candle -> green candle only", "reclaim", "reclaim_green")
+
+    print("\n3) Does the Bollinger gate add anything to the pattern?")
+    compare("reclaim -> + upper-band gate", "reclaim", "reclaim_upper")
+    compare("reclaim -> + lower-band gate", "reclaim", "reclaim_lower")
 
     print("\nPer timeframe:")
     for label in [tf["label"] for tf in selected_frames()]:

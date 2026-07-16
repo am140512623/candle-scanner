@@ -1,7 +1,7 @@
 """
 Cross-check: backtest_reclaim's fast bar-by-bar reimplementation must fire on
-EXACTLY the same bars as the live detector the bots actually run (bb_reclaim +
-scan_bb_grab / scan_bb_lower_touch).
+EXACTLY the same bars as the live detector the bots actually run
+(reclaim_pattern, on the US index bot).
 
 backtest_reclaim walks full history, so it reproduces the swallow/band/reclaim
 rules inline instead of calling the live code (same trick backtest_lower_touch.py
@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 import backtest_reclaim as bt
-import bb_reclaim
+import reclaim_pattern
 
 
 def random_walk(n, seed):
@@ -39,30 +39,29 @@ def random_walk(n, seed):
                         index=pd.date_range("2015-01-01", periods=n, freq="D"))
 
 
-def live_signals(df, gate):
+def live_signals(df):
     """Ground truth: replay the live detector bar by bar."""
     hits = set()
     for j in range(bt.MIN_BARS + 2, len(df) + 1):
-        matched, _ = bb_reclaim.reclaim_signal(df.iloc[:j], gate)
+        matched, _ = reclaim_pattern.reclaim_signal(df.iloc[:j])
         if matched:
             hits.add(j - 1)
     return hits
 
 
 def main():
-    assert bb_reclaim.MAX_WAIT == bt.MAX_WAIT, (
-        f"MAX_WAIT differs: live={bb_reclaim.MAX_WAIT} backtest={bt.MAX_WAIT}")
+    assert reclaim_pattern.MAX_WAIT == bt.MAX_WAIT, (
+        f"MAX_WAIT differs: live={reclaim_pattern.MAX_WAIT} backtest={bt.MAX_WAIT}")
 
-    gates = {"upper": bb_reclaim.breakout_gate, "lower": bb_reclaim.lower_touch_gate}
-    totals = {"upper": 0, "lower": 0}
+    totals = {"reclaim": 0}
     checked = 0
 
     for seed in range(40):
         df = random_walk(400, seed)
         found = bt.find_signals(df)
-        for band, gate in gates.items():
-            live = live_signals(df, gate)
-            back = {sig_i for sig_i, _e, _s, _g in found[f"reclaim_{band}"]}
+        for band in ("reclaim",):
+            live = live_signals(df)
+            back = {sig_i for sig_i, _e, _s, _g in found[band]}
 
             # The backtest drops setups with non-positive risk (stop >= entry);
             # the live detector has no such filter, so allow only THAT difference.
@@ -80,7 +79,7 @@ def main():
             checked += 1
 
     print(f"checked {checked} (seed, band) pairs over 40 random walks x 400 bars")
-    print(f"reclaim signals matched — upper: {totals['upper']}, lower: {totals['lower']}")
+    print(f"reclaim signals matched: {totals['reclaim']}")
     assert sum(totals.values()) > 0, "no signals fired at all — the test proves nothing"
     print("\nOK: the backtest fires on exactly the same bars as the live bots.")
 

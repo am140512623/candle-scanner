@@ -3,6 +3,13 @@ name: US index multi-timeframe scan
 # Bot #4 -- US500 / US100 / US30 index futures (ES=F, NQ=F, YM=F),
 # every frame from 4H to 1Y: 4H, 6H, 8H, 12H, 1D, 2D, 3D, 4D, 1W, 1M, 3M, 6M, 1Y.
 #
+# Runs TWO patterns on the same trigger (additive -- neither affects the other):
+#   * the Liquidity Grab (long + short), on every frame above -- unchanged.
+#   * grab -> reverse candle -> reclaim (LONG), on 4H..1D only. No Bollinger band
+#     is involved; see reclaim_pattern.py. It fires inside the same run, so this
+#     workflow and its hourly trigger need no changes. Its rows are logged under
+#     the IDXRC_ id-prefix so they never collide with the main pattern's.
+#
 # WHY NO `schedule:` HERE: GitHub's own cron fires late and bunched, which causes
 # late alerts and misses. Like the crypto bots, this is triggered EXTERNALLY by a
 # punctual scheduler (cron-job.org) that POSTs to the workflow_dispatch API. The

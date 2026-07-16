@@ -2,9 +2,8 @@
 Shared chart styling for the Bollinger bots, so the pictures tell you WHICH signal
 fired without having to read the filename.
 
-Every signal used to be drawn with the same teal highlight -- the charts were
-indistinguishable. Now two independent things are encoded, so any combination is
-readable at a glance:
+Both Bollinger signals used to be drawn with the same teal highlight -- the charts
+were indistinguishable. Now two independent things are encoded:
 
     SHAPE  = which band the grab touched
         ▲  upper band  (the breakout / "touch up")
@@ -13,14 +12,12 @@ readable at a glance:
     COLOUR = which signal it is
         white  plain upper-band breakout grab      (scan_bb_grab)
         green  plain lower-band touch grab         (scan_bb_lower_touch)
-        gold   grab → opposite candle → reclaim    (bb_reclaim, on either bot)
+        gold   grab → reverse candle → reclaim     (scan_indices, no band involved)
 
-So a gold ▲ is "breakout grab, then reclaimed", a gold ▼ is "lower-touch grab, then
-reclaimed", and the two plain grabs keep white ▲ / green ▼.
-
-IMPORTANT: all of these are LONG (BUY) setups. The arrow says which BAND was
-touched -- it is NOT the trade direction. A ▼ is still a buy. The chart repeats this
-in a footnote so a down arrow is never misread as a sell.
+IMPORTANT: all of these are LONG (BUY) setups. On the Bollinger charts the arrow
+says which BAND was touched -- it is NOT the trade direction, and a ▼ is still a
+buy. The chart repeats this in a footnote so a down arrow is never misread as a
+sell. The index pattern has no band, so its ▲ just means long.
 """
 
 import matplotlib
@@ -39,30 +36,35 @@ RED   = "#c0392b"
 #   marker/face/edge/text -> the signal marker under the signal candle + its badge
 #   shade                 -> the vertical highlight (white is invisible on the
 #                            chart's white background, so ① shades gray instead)
+# The band arrow is easy to misread as a sell, so the Bollinger charts spell it
+# out. The index pattern has no band, so it gets its own note instead.
+_BAND_NOTE = ("LONG (BUY) setup. The arrow shows which BAND was touched, "
+              "NOT the trade direction — a ▼ is still a buy.")
+_IDX_NOTE  = ("LONG (BUY) setup. Entry = close of the SIGNAL candle, the first to "
+              "close back above the REVERSE candle's open.")
+
 STYLES = {
     "BBGRAB_": {
         "tag": "① UPPER-BAND TOUCH ▲ → GRAB",
         "marker": "^", "face": WHITE, "edge": "black", "text": "black",
-        "shade": GRAY, "grab_shade": GRAY,
+        "shade": GRAY, "grab_shade": GRAY, "note": _BAND_NOTE,
+        "level_label": "LEVEL",
     },
     "BBLOWER_": {
         "tag": "② LOWER-BAND TOUCH ▼ → GRAB",
         "marker": "v", "face": GREEN, "edge": "black", "text": "white",
-        "shade": GREEN, "grab_shade": GREEN,
+        "shade": GREEN, "grab_shade": GREEN, "note": _BAND_NOTE,
+        "level_label": "LEVEL",
     },
-    "BBGRABRC_": {
-        "tag": "③ UPPER-BAND TOUCH ▲ → GRAB → OPPOSITE → RECLAIM",
+    # The standalone pattern on the US index bot. No band is involved, so the
+    # shape just means LONG here rather than encoding which band was touched.
+    "IDXRC_": {
+        "tag": "GRAB ▲ → REVERSE CANDLE → RECLAIM  (LONG)",
         "marker": "^", "face": GOLD, "edge": "black", "text": "black",
-        "shade": GOLD, "grab_shade": GRAY,     # grab keeps its parent's colour
-    },
-    "BBLOWERRC_": {
-        "tag": "③ LOWER-BAND TOUCH ▼ → GRAB → OPPOSITE → RECLAIM",
-        "marker": "v", "face": GOLD, "edge": "black", "text": "black",
-        "shade": GOLD, "grab_shade": GREEN,    # grab keeps its parent's colour
+        "shade": GOLD, "grab_shade": GRAY, "note": _IDX_NOTE,
+        "level_label": "RECLAIM LEVEL (the reverse candle's open)",
     },
 }
-
-FOOTNOTE = "All signals are LONG (BUY). The arrow shows which BAND was touched, not the trade direction."
 
 
 def band_addplots(plot_df, bollinger):
@@ -75,8 +77,14 @@ def band_addplots(plot_df, bollinger):
     ]
 
 
+# Where each role's label sits, in points below the candle's low. Each role gets
+# its OWN row: the pattern candles are often adjacent, and a label box is far wider
+# than one candle, so same-row boxes would collide.
+ROW = {"GRAB": -16, "REVERSE": -34, "SIGNAL": -58}
+
+
 def _role_color(role, style):
-    if role == "OPPOSITE":
+    if role == "REVERSE":
         return RED
     if role == "GRAB":
         return style["grab_shade"]
@@ -96,11 +104,12 @@ def render(plot_df, aps, title, out, prefix, roles, hline=None):
     kw = dict(
         type="candle",
         style="charles",
-        addplot=aps,
         title=f"\n{title}",
         ylabel="Price",
         returnfig=True,
     )
+    if aps:                     # the index pattern draws no bands -> no addplots
+        kw["addplot"] = aps
     if shown:
         kw["vlines"] = dict(vlines=list(shown),
                             colors=[_role_color(r, style) for r in shown.values()],
@@ -122,7 +131,7 @@ def render(plot_df, aps, title, out, prefix, roles, hline=None):
                       linewidth=1.0, boxstyle="round,pad=0.45"))
 
     if hline is not None:
-        ax.annotate("RECLAIM LEVEL (opposite candle's open)",
+        ax.annotate(style["level_label"],
                     xy=(0.015, hline), xycoords=("axes fraction", "data"),
                     va="bottom", ha="left", fontsize=7, fontweight="bold",
                     color="black", zorder=11,
@@ -131,9 +140,6 @@ def render(plot_df, aps, title, out, prefix, roles, hline=None):
 
     # The big arrow under the signal candle: shape = band, colour = signal.
     span = plot_df["High"].max() - plot_df["Low"].min()
-    # Each role gets its OWN row. The pattern candles are often adjacent, and a
-    # label box is far wider than one candle, so same-row boxes would collide.
-    ROW = {"GRAB": -16, "OPPOSITE": -34, "SIGNAL": -58}
     for ts, role in shown.items():
         x = plot_df.index.get_loc(ts)
         if role == "SIGNAL":
@@ -143,16 +149,16 @@ def render(plot_df, aps, title, out, prefix, roles, hline=None):
                     markeredgewidth=1.2, linestyle="None", clip_on=False, zorder=11)
         # Name each candle's part in the pattern, under the candle itself.
         ax.annotate(role, xy=(x, plot_df["Low"].loc[ts]),
-                    xytext=(0, ROW[role]),
+                    xytext=(0, ROW.get(role, -16)),
                     textcoords="offset points", ha="center", va="top",
                     fontsize=7, fontweight="bold", zorder=11,
-                    color="white" if role == "OPPOSITE" else "black",
+                    color="white" if role == "REVERSE" else "black",
                     bbox=dict(facecolor=_role_color(role, style),
                               edgecolor="black", linewidth=0.6,
                               boxstyle="round,pad=0.25"))
 
-    ax.text(0.5, -0.115, FOOTNOTE, transform=ax.transAxes, ha="center", va="top",
-            fontsize=7.5, color="#555555", style="italic")
+    ax.text(0.5, -0.115, style["note"], transform=ax.transAxes, ha="center",
+            va="top", fontsize=7.5, color="#555555", style="italic")
 
     fig.savefig(out, dpi=120, bbox_inches="tight")
     plt.close(fig)
