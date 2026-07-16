@@ -31,12 +31,13 @@ Run one slice locally (PowerShell):
 
 import os
 
-import mplfinance as mpf
 import pandas as pd
 
 import scan_all as s
 import scan_crypto as sc
 import scan_bb_grab as bbg   # reuse frames / universe / freshness / _bollinger
+import bb_reclaim            # the shared grab -> opposite candle -> reclaim stage
+import bb_chart              # per-signal colours, badge, candle role labels
 
 # --- This bot's Telegram creds. Default = the existing Bollinger bot's token, so
 #     lower-touch alerts land in the SAME chat as the breakout bot. A dedicated
@@ -90,12 +91,20 @@ def bb_lower_touch(df):
     return (False, None)
 
 
+def lower_touch_reclaim(df):
+    """(matched, info) for the EXTRA signal: a lower-band-touch grab, then the candle
+    right after it is OPPOSITE (red), then the FIRST candle to close above that red
+    candle's OPEN -- which must be the just-closed candle. See bb_reclaim."""
+    return bb_reclaim.reclaim_signal(df, bb_reclaim.lower_touch_gate)
+
+
 # ---------------------------------------------------------------------------
 # CHART -- candles + the three Bollinger lines, grab candle(s) highlighted.
 # ---------------------------------------------------------------------------
 def save_lower_chart(ticker, kind, df, tf_label, info, bars=80):
     """Candlestick PNG overlaid with the Bollinger Bands and a highlight over the
-    grab candle(s) that touched the lower band."""
+    grab candle(s) that touched the lower band. The green badge + colour identify
+    this as signal ② -- see bb_chart."""
     label = s.COMMODITIES.get(ticker, ticker)
     candle = df.index[-1].date()
     out_dir = os.path.join(s.CHART_DIR, f"BBLOWER_{tf_label}_{candle}")
@@ -103,27 +112,16 @@ def save_lower_chart(ticker, kind, df, tf_label, info, bars=80):
 
     bars = min(bars, len(df))
     plot_df = df.tail(bars).copy()
-    basis, upper, lower = bbg._bollinger(plot_df["Close"])
 
-    aps = [
-        mpf.make_addplot(upper, color="crimson", width=1.1),
-        mpf.make_addplot(basis, color="darkorange", width=1.0, linestyle="--"),
-        mpf.make_addplot(lower, color="royalblue", width=1.1),
-    ]
+    # Here the grab candle IS the signal candle; the one before it is the candle
+    # it swallowed.
+    roles = {df.index[-2]: "GRAB", df.index[-1]: "SIGNAL"}
 
     out = os.path.join(out_dir, f"BBLOWER_{tf_label}_{s._safe_name(label)}_{candle}.png")
-    mpf.plot(
-        plot_df,
-        type="candle",
-        style="charles",
-        addplot=aps,
-        title=f"\n{label} — Lower-Band Touch → Liquidity Grab ({tf_label})",
-        ylabel="Price",
-        vlines=dict(vlines=[df.index[-2], df.index[-1]], colors="teal",
-                    alpha=0.30, linewidths=9),
-        savefig=dict(fname=out, dpi=120, bbox_inches="tight"),
-    )
-    return out
+    return bb_chart.render(
+        plot_df, bb_chart.band_addplots(plot_df, bbg._bollinger),
+        f"{label} — Lower-Band Touch → Liquidity Grab ({tf_label})",
+        out, "BBLOWER_", roles)
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +178,7 @@ def run(segment, catalog=bbg.FRAMES_CATALOG, bot="bb_lower_touch"):
     total = 0
     for tf in frames:
         base_data = bases[tf["base"]]
-        matches, stale = [], 0
+        matches, reclaims, stale = [], [], 0
         for t, df in base_data.items():
             try:
                 d = sc.resample_ohlc(df, tf["rkw"]) if tf["rkw"] else df
@@ -195,13 +193,25 @@ def run(segment, catalog=bbg.FRAMES_CATALOG, bot="bb_lower_touch"):
                 matched, info = bb_lower_touch(d)
                 if matched:
                     matches.append((t, d, info))
+                # Independent extra signal -- a lower-touch grab that has since been
+                # reclaimed. Both can fire on the same symbol/frame; they are
+                # different candles, logged under different id-prefixes.
+                r_matched, r_info = lower_touch_reclaim(d)
+                if r_matched:
+                    reclaims.append((t, d, r_info))
             except Exception:
                 continue
-        print(f"\n[{tf['label']}] {len(matches)} match(es) from {len(base_data)} symbols"
+        print(f"\n[{tf['label']}] {len(matches)} match(es), "
+              f"{len(reclaims)} reclaim(s) from {len(base_data)} symbols"
               + (f" ({stale} skipped: candle not fresh)" if stale else ""))
         for t, d, info in matches:
             total += 1
             _alert(kind, t, tf["label"], d, info, bot)
+        for t, d, info in reclaims:
+            total += 1
+            bb_reclaim.alert(kind, t, tf["label"], d, info, bot + "_reclaim",
+                             "BBLOWERRC_", "Lower-Touch Grab → Opposite Candle → Reclaim",
+                             "grab touched the lower band")
 
     print("\n" + "=" * 40)
     print(f"{segment}: {total} total match(es) across all frames")

@@ -106,6 +106,17 @@ def bb_grab(df):
     return (False, None)
 
 
+def bb_grab_reclaim(df):
+    """(matched, info) for the EXTRA signal: a Bollinger-breakout grab, then the
+    candle right after it is OPPOSITE (red), then the FIRST candle to close above
+    that red candle's OPEN -- which must be the just-closed candle. See bb_reclaim.
+
+    Imported lazily: bb_reclaim imports this module for MIN_BARS/_bollinger, so a
+    top-level import here would be circular."""
+    import bb_reclaim
+    return bb_reclaim.reclaim_signal(df, bb_reclaim.breakout_gate)
+
+
 # ---------------------------------------------------------------------------
 # TIMEFRAMES -- 4H up to 1Y (built from 1h and 1d Yahoo candles). This bot
 # intentionally skips the 1H frame: it scans 4H -> 1W and 1W -> 1Y only.
@@ -252,7 +263,10 @@ def build_universe(segment):
 # ---------------------------------------------------------------------------
 def save_bb_chart(ticker, kind, df, tf_label, info, bars=80):
     """Candlestick PNG overlaid with the Bollinger Bands (basis + upper/lower) and a
-    highlight over the grab candle(s) that punched up through the top band."""
+    highlight over the grab candle(s) that punched up through the top band. The aqua
+    badge + colour identify this as signal ① -- see bb_chart."""
+    import bb_chart
+
     label = s.COMMODITIES.get(ticker, ticker)
     candle = df.index[-1].date()
     out_dir = os.path.join(s.CHART_DIR, f"BBGRAB_{tf_label}_{candle}")
@@ -260,27 +274,16 @@ def save_bb_chart(ticker, kind, df, tf_label, info, bars=80):
 
     bars = min(bars, len(df))
     plot_df = df.tail(bars).copy()
-    basis, upper, lower = _bollinger(plot_df["Close"])
 
-    aps = [
-        mpf.make_addplot(upper, color="crimson", width=1.1),
-        mpf.make_addplot(basis, color="darkorange", width=1.0, linestyle="--"),
-        mpf.make_addplot(lower, color="royalblue", width=1.1),
-    ]
+    # Here the grab candle IS the signal candle; the one before it is the candle
+    # it swallowed.
+    roles = {df.index[-2]: "GRAB", df.index[-1]: "SIGNAL"}
 
     out = os.path.join(out_dir, f"BBGRAB_{tf_label}_{s._safe_name(label)}_{candle}.png")
-    mpf.plot(
-        plot_df,
-        type="candle",
-        style="charles",
-        addplot=aps,
-        title=f"\n{label} — Bollinger Breakout → Liquidity Grab ({tf_label})",
-        ylabel="Price",
-        vlines=dict(vlines=[df.index[-2], df.index[-1]], colors="teal",
-                    alpha=0.30, linewidths=9),
-        savefig=dict(fname=out, dpi=120, bbox_inches="tight"),
-    )
-    return out
+    return bb_chart.render(
+        plot_df, bb_chart.band_addplots(plot_df, _bollinger),
+        f"{label} — Bollinger Breakout → Liquidity Grab ({tf_label})",
+        out, "BBGRAB_", roles)
 
 
 # ---------------------------------------------------------------------------
@@ -334,10 +337,12 @@ def run(segment, catalog=FRAMES_CATALOG, bot="bb_grab"):
         if is_crypto:
             bases[b] = s.dedupe_crypto(bases[b])   # drop wrapped/bridged clones
 
+    import bb_reclaim
+
     total = 0
     for tf in frames:
         base_data = bases[tf["base"]]
-        matches, stale = [], 0
+        matches, reclaims, stale = [], [], 0
         for t, df in base_data.items():
             try:
                 d = sc.resample_ohlc(df, tf["rkw"]) if tf["rkw"] else df
@@ -352,13 +357,25 @@ def run(segment, catalog=FRAMES_CATALOG, bot="bb_grab"):
                 matched, info = bb_grab(d)
                 if matched:
                     matches.append((t, d, info))
+                # Independent extra signal -- a breakout grab that has since been
+                # reclaimed. Both can fire on the same symbol/frame; they are
+                # different candles, logged under different id-prefixes.
+                r_matched, r_info = bb_grab_reclaim(d)
+                if r_matched:
+                    reclaims.append((t, d, r_info))
             except Exception:
                 continue
-        print(f"\n[{tf['label']}] {len(matches)} match(es) from {len(base_data)} symbols"
+        print(f"\n[{tf['label']}] {len(matches)} match(es), "
+              f"{len(reclaims)} reclaim(s) from {len(base_data)} symbols"
               + (f" ({stale} skipped: candle not fresh)" if stale else ""))
         for t, d, info in matches:
             total += 1
             _alert(kind, t, tf["label"], d, info, bot)
+        for t, d, info in reclaims:
+            total += 1
+            bb_reclaim.alert(kind, t, tf["label"], d, info, bot + "_reclaim",
+                             "BBGRABRC_", "Breakout Grab → Opposite Candle → Reclaim",
+                             "grab closed above the upper band")
 
     print("\n" + "=" * 40)
     print(f"{segment}: {total} total match(es) across all frames")
