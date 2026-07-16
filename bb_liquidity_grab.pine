@@ -28,6 +28,9 @@ indicator("Bollinger Breakout → Liquidity Grab", overlay = true,
 bbLen  = input.int(20,   "Bollinger length",      minval = 2,   group = "Bollinger Bands")
 bbMult = input.float(2.0,"Bollinger StdDev mult", minval = 0.1, group = "Bollinger Bands")
 
+maxWait = input.int(10, "Reclaim: max candles after the opposite candle",
+     minval = 1, group = "Reclaim")
+
 drawLevels = input.bool(true, "Draw pattern lines / labels", group = "Display")
 
 // -------------------------- Bollinger Bands --------------------------
@@ -65,19 +68,64 @@ bool bbBreakout = open < upper and close > upper
 
 bool signal = grab and bbBreakout
 
+// ============ EXTRA: grab -> opposite candle -> reclaim ==============
+// An additional signal on top of the one above (that one still fires as before):
+//   1) a gated grab (the `signal` bar), then
+//   2) the candle IMMEDIATELY after it is OPPOSITE -- a RED candle. Its OPEN
+//      becomes the level to reclaim.
+//   3) the FIRST candle to CLOSE above that red candle's OPEN is the signal
+//      candle. Only the first one counts; afterwards the setup is spent.
+// The reclaim must arrive within `maxWait` candles of the red candle.
+var float oppOpen = na
+var int   oppBar  = na
+
+// Evaluate the reclaim against the level carried in from earlier bars FIRST, so a
+// red candle that arms a new setup can never overwrite one it is reclaiming.
+float rcLevel = oppOpen                 // kept for drawing: the state is cleared below
+int   rcBar   = oppBar
+bool armed    = not na(oppOpen) and bar_index > oppBar and (bar_index - oppBar) <= maxWait
+bool reclaim  = armed and close > oppOpen
+
+if reclaim or (not na(oppBar) and bar_index - oppBar >= maxWait)
+    oppOpen := na                       // fired, or waited too long -- drop it
+    oppBar  := na
+
+// Arm: previous bar was a gated grab and this one is the opposite colour.
+if signal[1] and close < open
+    oppOpen := open
+    oppBar  := bar_index
+
 // --------------------------- drawing ---------------------------------
-plotshape(signal, title = "Buy (BB breakout grab)", style = shape.triangleup,
-     location = location.belowbar, color = color.aqua, size = size.small, text = "BUY")
+// Marker code, shared with the scanner's PNGs (see bb_chart.py):
+//   SHAPE  ▲ = the UPPER band was touched (this script)   ▼ = the lower band
+//   COLOUR white = plain grab            gold = grab → opposite → reclaim
+// Both are LONG (BUY) -- the arrow says which BAND, not the trade direction.
+plotshape(signal, title = "Buy (upper-band touch grab)", style = shape.triangleup,
+     location = location.belowbar, color = color.white, size = size.small, text = "BUY")
+
+plotshape(reclaim, title = "Buy (upper-band touch grab reclaim)", style = shape.triangleup,
+     location = location.belowbar, color = #D4A017, size = size.small, text = "RECLAIM")
+
+if reclaim and drawLevels
+    // the reclaimed level: the opposite candle's open, run out to the signal bar
+    line.new(rcBar, rcLevel, bar_index, rcLevel, xloc = xloc.bar_index,
+         color = #D4A017, style = line.style_solid, width = 2)
+    label.new(bar_index, high, "RECLAIM ▲", xloc = xloc.bar_index,
+         yloc = yloc.abovebar, style = label.style_label_down,
+         color = #D4A017, textcolor = color.black, size = size.small)
 
 if signal and drawLevels
     // the grab candle(s) -> the entry
     int grabStart = swallow3 ? bar_index - 2 : bar_index - 1
     line.new(grabStart, low, bar_index, low, xloc = xloc.bar_index,
-         color = color.aqua, style = line.style_dotted, width = 1)
-    label.new(bar_index, high, "GRAB ▲ (BB)", xloc = xloc.bar_index,
+         color = color.white, style = line.style_dotted, width = 1)
+    label.new(bar_index, high, "GRAB ▲ (upper band)", xloc = xloc.bar_index,
          yloc = yloc.abovebar, style = label.style_label_down,
-         color = color.new(color.aqua, 0), textcolor = color.black, size = size.small)
+         color = color.white, textcolor = color.black, size = size.small)
 
 // --------------------------- alerts ----------------------------------
 alertcondition(signal, "Bollinger Breakout Grab",
      "Liquidity grab closing above the upper Bollinger band: BUY")
+
+alertcondition(reclaim, "Bollinger Breakout Grab → Reclaim",
+     "Breakout grab, opposite candle after it, now closed back above that candle's open: BUY")
