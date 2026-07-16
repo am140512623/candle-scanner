@@ -33,8 +33,13 @@ import pandas as pd
 
 import scan_all as s
 import scan_crypto as sc
+import reclaim_pattern            # grab -> reverse candle -> reclaim (LONG)
+import bb_chart                   # shared per-signal chart styling
 
 # --- This bot's own Telegram credentials ---
+# NOTE: set AFTER every import above. Some scan_* modules assign scan_all.BOT_TOKEN
+# at import time, so this assignment must come last to win. reclaim_pattern is
+# deliberately free of that side effect.
 s.BOT_TOKEN = os.environ.get("US_INDEX_BOT_TOKEN") or "YOUR_US_INDEX_BOT_TOKEN"
 # Same recipients as the other bots by default; each must tap Start on THIS bot
 # once. Override with the US_INDEX_CHAT_ID secret (comma-separated) if needed.
@@ -190,6 +195,65 @@ def chart_links(ticker):
     return yahoo, tv
 
 
+# ---------------------------------------------------------------------------
+# EXTRA PATTERN -- grab -> reverse candle -> reclaim (LONG), 4H..1D only.
+# Runs on the SAME universe (US500 / US100 / US30) as the pattern above, on its
+# own RECLAIM_FRAMES subset, and logs under its own IDXRC_ id-prefix so its rows
+# never collide with this bot's main signals.
+# ---------------------------------------------------------------------------
+RECLAIM_FRAMES = {"4H", "6H", "8H", "12H", "1D"}
+
+
+def save_reclaim_chart(ticker, df, tf_label, info, bars=80):
+    """Candlestick PNG marking the grab, the reverse candle and the signal candle,
+    with the reclaimed level drawn across. No Bollinger bands -- this pattern does
+    not use them."""
+    label = INDICES[ticker]["name"]
+    candle = df.index[-1].date()
+    out_dir = os.path.join(s.CHART_DIR, f"IDXRC_{tf_label}_{candle}")
+    os.makedirs(out_dir, exist_ok=True)
+
+    plot_df = df.tail(min(bars, len(df))).copy()
+    roles = {
+        df.index[info["grab_idx"]]: "GRAB",
+        df.index[info["opp_idx"]]: "REVERSE",
+        df.index[-1]: "SIGNAL",
+    }
+    out = os.path.join(out_dir, f"IDXRC_{tf_label}_{s._safe_name(label)}_{candle}.png")
+    return bb_chart.render(
+        plot_df, [], f"{label} — Grab → Reverse Candle → Reclaim ({tf_label})",
+        out, "IDXRC_", roles, hline=info["opp_open"])
+
+
+def _alert_reclaim(ticker, tf_label, d, info, bot):
+    """Log + send one reclaim match (chart if possible, else text)."""
+    name = INDICES[ticker]["name"]
+    yahoo, tv = chart_links(ticker)
+    msg = (f"[{tf_label}] MATCH: {name} (INDEX) — "
+           f"grab → reverse candle → reclaim (LONG)\n"
+           f"[reclaimed the reverse candle's open {info['opp_open']:.2f} "
+           f"after {info['waited']} candle(s)]\n"
+           f"Yahoo: {yahoo}\nTradingView: {tv}")
+    # Telegram is UTF-8, but a Windows cp1252 console raises on "→"/"—" -- and an
+    # exception here would abort the whole scan. Only the local echo is degraded.
+    print("  " + msg.splitlines()[0].encode("ascii", "replace").decode())
+    chart_path = None
+    try:
+        chart_path = save_reclaim_chart(ticker, d, tf_label, info)
+    except Exception as e:
+        print(f"    (could not draw chart: {e})")
+    s.log_signal("INDEX", ticker, tf_label, d, bot=bot, direction="long",
+                 id_prefix="IDXRC_", chart=s.chart_rel_path(chart_path))
+    if chart_path:
+        try:
+            s.send_telegram_photo(chart_path, msg)
+        except Exception as e:
+            print(f"    (could not send photo: {e})")
+            s.send_telegram_alert(msg)
+    else:
+        s.send_telegram_alert(msg)
+
+
 def run(tickers=None, catalog=FRAMES_CATALOG, bot="us_index"):
     """Scan the index futures across the selected timeframes, sending each match
     via this bot's Telegram token. Returns the match count.
@@ -217,7 +281,7 @@ def run(tickers=None, catalog=FRAMES_CATALOG, bot="us_index"):
     total = 0
     for tf in frames:
         base_data = bases[tf["base"]]
-        matches, stale = [], 0
+        matches, reclaims, stale = [], [], 0
         for t, df in base_data.items():
             try:
                 d = sc.resample_ohlc(df, tf["rkw"]) if tf["rkw"] else df
@@ -233,10 +297,21 @@ def run(tickers=None, catalog=FRAMES_CATALOG, bot="us_index"):
                     matches.append((t, d, "long"))
                 elif s.check_pattern_bearish(d):
                     matches.append((t, d, "short"))
+                # Independent extra pattern, 4H..1D only. Its signal candle is a
+                # LATER bar than the grab, so it can fire on the same bar as the
+                # main pattern or on its own; they never interfere.
+                if tf["label"] in RECLAIM_FRAMES:
+                    r_matched, r_info = reclaim_pattern.reclaim_signal(d)
+                    if r_matched:
+                        reclaims.append((t, d, r_info))
             except Exception:
                 continue
-        print(f"\n[{tf['label']}] {len(matches)} match(es) from {len(base_data)} symbols"
+        print(f"\n[{tf['label']}] {len(matches)} match(es), "
+              f"{len(reclaims)} reclaim(s) from {len(base_data)} symbols"
               + (f" ({stale} skipped: candle not fresh)" if stale else ""))
+        for t, d, info in reclaims:
+            total += 1
+            _alert_reclaim(t, tf["label"], d, info, bot + "_reclaim")
         for t, d, direction in matches:
             total += 1
             name = INDICES[t]["name"]

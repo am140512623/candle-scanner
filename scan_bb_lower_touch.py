@@ -36,7 +36,6 @@ import pandas as pd
 import scan_all as s
 import scan_crypto as sc
 import scan_bb_grab as bbg   # reuse frames / universe / freshness / _bollinger
-import bb_reclaim            # the shared grab -> opposite candle -> reclaim stage
 import bb_chart              # per-signal colours, badge, candle role labels
 
 # --- This bot's Telegram creds. Default = the existing Bollinger bot's token, so
@@ -89,13 +88,6 @@ def bb_lower_touch(df):
         }
         return (True, info)
     return (False, None)
-
-
-def lower_touch_reclaim(df):
-    """(matched, info) for the EXTRA signal: a lower-band-touch grab, then the candle
-    right after it is OPPOSITE (red), then the FIRST candle to close above that red
-    candle's OPEN -- which must be the just-closed candle. See bb_reclaim."""
-    return bb_reclaim.reclaim_signal(df, bb_reclaim.lower_touch_gate)
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +170,7 @@ def run(segment, catalog=bbg.FRAMES_CATALOG, bot="bb_lower_touch"):
     total = 0
     for tf in frames:
         base_data = bases[tf["base"]]
-        matches, reclaims, stale = [], [], 0
+        matches, stale = [], 0
         for t, df in base_data.items():
             try:
                 d = sc.resample_ohlc(df, tf["rkw"]) if tf["rkw"] else df
@@ -193,25 +185,13 @@ def run(segment, catalog=bbg.FRAMES_CATALOG, bot="bb_lower_touch"):
                 matched, info = bb_lower_touch(d)
                 if matched:
                     matches.append((t, d, info))
-                # Independent extra signal -- a lower-touch grab that has since been
-                # reclaimed. Both can fire on the same symbol/frame; they are
-                # different candles, logged under different id-prefixes.
-                r_matched, r_info = lower_touch_reclaim(d)
-                if r_matched:
-                    reclaims.append((t, d, r_info))
             except Exception:
                 continue
-        print(f"\n[{tf['label']}] {len(matches)} match(es), "
-              f"{len(reclaims)} reclaim(s) from {len(base_data)} symbols"
+        print(f"\n[{tf['label']}] {len(matches)} match(es) from {len(base_data)} symbols"
               + (f" ({stale} skipped: candle not fresh)" if stale else ""))
         for t, d, info in matches:
             total += 1
             _alert(kind, t, tf["label"], d, info, bot)
-        for t, d, info in reclaims:
-            total += 1
-            bb_reclaim.alert(kind, t, tf["label"], d, info, bot + "_reclaim",
-                             "BBLOWERRC_", "Lower-Touch Grab → Opposite Candle → Reclaim",
-                             "grab touched the lower band")
 
     print("\n" + "=" * 40)
     print(f"{segment}: {total} total match(es) across all frames")
