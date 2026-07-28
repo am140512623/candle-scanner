@@ -7,8 +7,11 @@ Real, buyable ETF SHARES only (NOT CFDs / futures / contracts):
     US30   -> DIA  (Dow Jones)
     US100  -> QQQ  (Nasdaq 100)
     US500  -> SPY  (S&P 500)
+    GOLD   -> GLD  (SPDR Gold Shares -- spot gold bullion, NOT the XAUUSD CFD)
+    SILVER -> SLV  (iShares Silver Trust -- physical silver, NOT the XAGUSD CFD)
 
-Timeframes 30m and up: 30m, 1h, 2h, 4h, 1D, 1W.
+Timeframes 30m and up: 30m, 1h, 2h, 4h, 1D, 1W -- except the metals, which are
+scanned on 4h and above only (see ASSET_FRAMES).
 
     python index_signals.py            # scan once, alert on the latest CLOSED candle
     python index_signals.py --print    # also print matches to the console
@@ -50,6 +53,16 @@ ASSETS = {
     "DIA": "US30 (Dow Jones — DIA)",
     "QQQ": "US100 (Nasdaq 100 — QQQ)",
     "SPY": "US500 (S&P 500 — SPY)",
+    "GLD": "GOLD (Spot Gold — GLD)",
+    "SLV": "SILVER (Spot Silver — SLV)",
+}
+
+# Which frames each asset is scanned on. Absent from here = every frame below.
+# The metals are wanted on 4h and ABOVE only (same floor as the scan_indices bot),
+# so the sub-4h frames stay index-only.
+ASSET_FRAMES = {
+    "GLD": {"4h", "1D", "1W"},
+    "SLV": {"4h", "1D", "1W"},
 }
 
 # 30m and every frame above it. 2h/4h are resampled from 1h candles.
@@ -174,7 +187,10 @@ def _mark_seen(key):
 def scan(do_print=False):
     seen = _load_seen()
     for ticker, name in ASSETS.items():
+        allowed = ASSET_FRAMES.get(ticker)
         for fr in FRAMES:
+            if allowed is not None and fr["label"] not in allowed:
+                continue
             try:
                 raw = yf.download(ticker, interval=fr["interval"], period=fr["period"],
                                   auto_adjust=False, progress=False)
