@@ -1,6 +1,7 @@
 name: US index multi-timeframe scan
 
-# Bot #4 -- US500 / US100 / US30 index futures (ES=F, NQ=F, YM=F),
+# Bot #4 -- US500 / US100 / US30 / GOLD / SILVER as real buyable ETF shares, not
+# futures or CFDs (SPY, QQQ, DIA, GLD, SLV),
 # every frame from 4H to 1Y: 4H, 6H, 8H, 12H, 1D, 2D, 3D, 4D, 1W, 1M, 3M, 6M, 1Y.
 #
 # Runs TWO patterns on the same trigger (additive -- neither affects the other):

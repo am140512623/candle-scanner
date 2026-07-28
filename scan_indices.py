@@ -1,18 +1,24 @@
 """
-Bot #4 -- US index-futures scanner (US500 / US100 / US30).
+Bot #4 -- US index + metals ETF scanner (US500 / US100 / US30 / GOLD / SILVER).
 
-Scans the three big US index futures for the same Liquidity Grab pattern on EVERY
-clean timeframe from 4 hours up to 1 year:
+Scans the universe for the same Liquidity Grab pattern on EVERY clean timeframe
+from 4 hours up to 1 year:
 
     4H, 6H, 8H, 12H, 1D, 2D, 3D, 4D, 1W, 1M, 3M, 6M, 1Y
 
-We use the CME futures (not the cash indices or ETFs) because they trade ~23h a
-day, so the intraday 4H..12H candles align cleanly -- the cash indices only trade
-~6.5h, which would leave ragged intraday bars. The mapping is:
+Everything here is a REAL, buyable ETF share -- no futures, no CFDs, no leverage:
 
     SPY -> US500  (S&P 500 ETF, real shares)
     QQQ -> US100  (Nasdaq-100 ETF, real shares)
     DIA -> US30   (Dow 30 ETF, real shares)
+    GLD -> GOLD   (SPDR Gold Shares -- spot gold bullion, NOT the XAUUSD CFD)
+    SLV -> SILVER (iShares Silver Trust -- physical silver, NOT the XAGUSD CFD)
+
+All five list on US exchanges and trade the same ~6.5h session, so the intraday
+4H..12H bars are built from a short trading day rather than a 24h one. That makes
+those bars ragged in wall-clock terms, but identically ragged for every symbol, so
+the frames stay comparable across the universe -- the two metals behave exactly
+like the three index ETFs here.
 
 Yahoo serves 1h and 1d candles natively. The 4H/6H/8H/12H frames are built from
 hourly data; everything 1D and above is built from daily data (which goes back to
@@ -50,14 +56,21 @@ s.CHAT_IDS = [
 if os.environ.get("US_INDEX_CHAT_ID"):
     s.CHAT_IDS = [c.strip() for c in os.environ["US_INDEX_CHAT_ID"].split(",") if c.strip()]
 
-# The universe: three index ETFs you BUY as real shares (NOT futures/CFDs), with
-# the friendly US### names shown in alerts and the TradingView symbol for the link.
+# The universe: ETFs you BUY as real shares (NOT futures/CFDs), with the friendly
+# name shown in alerts, the TradingView symbol for the link, and the asset class
+# used for the signal rows / chart titles. Gold and silver are commodities rather
+# than indices, so they are tagged COMMODITY -- their rows never claim to be an
+# index, and their signal_ids therefore can't collide with the three index ETFs'.
 INDICES = {
-    "SPY": {"name": "US500 (S&P 500 — SPY)",    "tv": "SPY"},
-    "QQQ": {"name": "US100 (Nasdaq 100 — QQQ)", "tv": "QQQ"},
-    "DIA": {"name": "US30 (Dow 30 — DIA)",      "tv": "DIA"},
+    "SPY": {"name": "US500 (S&P 500 — SPY)",     "tv": "SPY", "kind": "INDEX"},
+    "QQQ": {"name": "US100 (Nasdaq 100 — QQQ)",  "tv": "QQQ", "kind": "INDEX"},
+    "DIA": {"name": "US30 (Dow 30 — DIA)",       "tv": "DIA", "kind": "INDEX"},
+    "GLD": {"name": "GOLD (Spot Gold — GLD)",    "tv": "GLD", "kind": "COMMODITY"},
+    "SLV": {"name": "SILVER (Spot Silver — SLV)", "tv": "SLV", "kind": "COMMODITY"},
 }
-# Teach save_chart the friendly labels (it looks names up in COMMODITIES).
+# Teach save_chart the friendly labels (it looks names up in COMMODITIES). GLD and
+# SLV are already in there as "Gold (GLD)" / "Silver (SLV)" for the commodity scan;
+# this bot's own labels win inside this process, which is where its charts are drawn.
 s.COMMODITIES.update({sym: meta["name"] for sym, meta in INDICES.items()})
 
 RESAMPLE_ORIGIN = "epoch"
@@ -197,9 +210,9 @@ def chart_links(ticker):
 
 # ---------------------------------------------------------------------------
 # EXTRA PATTERN -- grab -> reverse candle -> reclaim (LONG), 4H..1D only.
-# Runs on the SAME universe (US500 / US100 / US30) as the pattern above, on its
-# own RECLAIM_FRAMES subset, and logs under its own IDXRC_ id-prefix so its rows
-# never collide with this bot's main signals.
+# Runs on the SAME universe (US500 / US100 / US30 / GOLD / SILVER) as the pattern
+# above, on its own RECLAIM_FRAMES subset, and logs under its own IDXRC_ id-prefix
+# so its rows never collide with this bot's main signals.
 # ---------------------------------------------------------------------------
 RECLAIM_FRAMES = {"4H", "6H", "8H", "12H", "1D"}
 
@@ -228,8 +241,9 @@ def save_reclaim_chart(ticker, df, tf_label, info, bars=80):
 def _alert_reclaim(ticker, tf_label, d, info, bot):
     """Log + send one reclaim match (chart if possible, else text)."""
     name = INDICES[ticker]["name"]
+    kind = INDICES[ticker]["kind"]
     yahoo, tv = chart_links(ticker)
-    msg = (f"[{tf_label}] MATCH: {name} (INDEX) — "
+    msg = (f"[{tf_label}] MATCH: {name} ({kind}) — "
            f"grab → reverse candle → reclaim (LONG)\n"
            f"[reclaimed the reverse candle's open {info['opp_open']:.2f} "
            f"after {info['waited']} candle(s)]\n"
@@ -242,7 +256,7 @@ def _alert_reclaim(ticker, tf_label, d, info, bot):
         chart_path = save_reclaim_chart(ticker, d, tf_label, info)
     except Exception as e:
         print(f"    (could not draw chart: {e})")
-    s.log_signal("INDEX", ticker, tf_label, d, bot=bot, direction="long",
+    s.log_signal(kind, ticker, tf_label, d, bot=bot, direction="long",
                  id_prefix="IDXRC_", chart=s.chart_rel_path(chart_path))
     if chart_path:
         try:
@@ -315,16 +329,17 @@ def run(tickers=None, catalog=FRAMES_CATALOG, bot="us_index"):
         for t, d, direction in matches:
             total += 1
             name = INDICES[t]["name"]
+            kind = INDICES[t]["kind"]
             yahoo, tv = chart_links(t)
-            msg = (f"[{tf['label']}] MATCH: {name} (INDEX) formed your {s.pattern_name(direction)} pattern!\n"
+            msg = (f"[{tf['label']}] MATCH: {name} ({kind}) formed your {s.pattern_name(direction)} pattern!\n"
                    f"Yahoo: {yahoo}\nTradingView: {tv}")
             print("  " + msg.splitlines()[0])
             chart_path = None
             try:
-                chart_path = s.save_chart(t, "INDEX", d, tf["label"], direction=direction)
+                chart_path = s.save_chart(t, kind, d, tf["label"], direction=direction)
             except Exception as e:
                 print(f"    (could not draw chart: {e})")
-            s.log_signal("INDEX", t, tf["label"], d, bot=bot, direction=direction,
+            s.log_signal(kind, t, tf["label"], d, bot=bot, direction=direction,
                          chart=s.chart_rel_path(chart_path))
             if chart_path:
                 try:
