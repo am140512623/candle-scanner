@@ -3,12 +3,15 @@ Sharp-Drop -> Higher-Low -> Peak-Break signals for the US indices, sent to
 Telegram. SEPARATE from the other scanners -- it imports your existing Telegram
 config from scan_all and changes nothing there.
 
-Real, buyable ETF SHARES only (NOT CFDs / futures / contracts):
+Tickers scanned:
     US30   -> DIA  (Dow Jones)
     US100  -> QQQ  (Nasdaq 100)
     US500  -> SPY  (S&P 500)
-    GOLD   -> GLD  (SPDR Gold Shares -- spot gold bullion, NOT the XAUUSD CFD)
-    SILVER -> SLV  (iShares Silver Trust -- physical silver, NOT the XAGUSD CFD)
+    GOLD   -> GLD  (SPDR Gold Shares -- spot gold bullion)
+    SILVER -> SLV  (iShares Silver Trust -- physical silver)
+
+Every alert carries a chart PNG showing the five candles that make the pattern, so
+the numbers in the caption can be checked against the picture.
 
 Timeframes 30m and up: 30m, 1h, 2h, 4h, 1D, 1W -- except the metals, which are
 scanned on 4h and above only (see ASSET_FRAMES).
@@ -19,6 +22,10 @@ scanned on 4h and above only (see ASSET_FRAMES).
 Schedule it (Task Scheduler / cron / your cloud runner) as often as you like.
 Each (asset, timeframe, candle) is alerted only once -- state kept in
 .index_signals_seen.txt next to this file.
+
+A candle is judged as soon as it stops trading (see _drop_unclosed), so a daily
+signal goes out the same evening rather than waiting for the next session's row
+to show up in the data.
 """
 
 import argparse
@@ -28,6 +35,8 @@ import numpy as np
 import pandas as pd
 import requests
 import yfinance as yf
+
+import bb_chart                   # shared per-signal chart styling
 
 # --- Telegram: the @us3indexbot bot (its OWN token, separate from scan_all) ---
 # Get the token from @BotFather for @us3indexbot, and the chat id you want alerts
@@ -48,7 +57,38 @@ def send_telegram_alert(message):
         except Exception:
             pass
 
-# Real assets you can BUY as shares (no CFDs, no leverage, no bidding).
+
+def _safe_print(text):
+    """Print without ever raising. A console that isn't UTF-8 (Windows cp1252) chokes
+    on the 🟢 in the alert, and that exception used to land in the scan loop's
+    handler -- losing the whole signal, chart and Telegram message included."""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        print(text.encode("ascii", "replace").decode("ascii"))
+
+
+def send_telegram_photo(image_path, caption):
+    """Send the chart with the alert text as its caption. Returns False if any
+    recipient failed, so the caller can fall back to a plain text alert."""
+    if "YOUR_" in BOT_TOKEN or not CHAT_IDS:
+        return True                     # nothing configured: not a failure
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+    ok = True
+    for chat_id in CHAT_IDS:
+        try:
+            with open(image_path, "rb") as f:
+                r = requests.post(url, data={"chat_id": chat_id, "caption": caption},
+                                  files={"photo": f}, timeout=30)
+            if not r.ok:
+                print(f"  Telegram photo error to {chat_id}: {r.status_code} {r.text}")
+                ok = False
+        except Exception as e:
+            print(f"  Error sending photo to {chat_id}: {e}")
+            ok = False
+    return ok
+
+
 ASSETS = {
     "DIA": "US30 (Dow Jones — DIA)",
     "QQQ": "US100 (Nasdaq 100 — QQQ)",
@@ -163,13 +203,98 @@ def detect(df):
     if non_red > MAX_NON_RED:
         return None
 
+    # The *_bar positions are what the chart marks up, so the picture and the
+    # numbers in the alert can never drift apart.
     return {"entry": float(peak), "low1": float(low1), "low2": float(low2),
-            "drop_pct": float(drop_pct), "bar_time": df.index[last]}
+            "drop_pct": float(drop_pct), "bar_time": df.index[last],
+            "ds_bar": ds_bar, "low1_bar": low1_bar,
+            "peak_bar": peak_bar, "low2_bar": low2_bar}
+
+
+# Chart PNGs land next to this script, in the same charts/ folder the other bots
+# use -- the workflow archives that folder to the private `charts` branch.
+CHART_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "charts")
+
+
+def _safe_name(text):
+    return "".join(c if c.isalnum() else "_" for c in text)
+
+
+def save_chart(name, df, tf_label, m, min_bars=60, lead=12):
+    """Save the signal's chart: the five pattern candles labelled, and the entry
+    level drawn across. The window always reaches back past the drop's top (plus
+    `lead` bars of run-up) so the whole setup is visible, never just the break."""
+    candle = df.index[-1].date()
+    out_dir = os.path.join(CHART_DIR, f"IDXSD_{tf_label}_{candle}")
+    os.makedirs(out_dir, exist_ok=True)
+
+    need = len(df) - m["ds_bar"] + lead
+    plot_df = df.tail(min(max(min_bars, need), len(df))).copy()
+    roles = {
+        df.index[m["ds_bar"]]:   "DROP TOP",
+        df.index[m["low1_bar"]]: "BOTTOM",
+        df.index[m["peak_bar"]]: "PEAK",
+        df.index[m["low2_bar"]]: "HIGHER LOW",
+        df.index[-1]:            "SIGNAL",
+    }
+    out = os.path.join(out_dir,
+                       f"IDXSD_{tf_label}_{_safe_name(name)}_{candle}.png")
+    return bb_chart.render(
+        plot_df, [], f"{name} — Sharp Drop → Higher Low → Peak Break ({tf_label})",
+        out, "IDXSD_", roles, hline=m["entry"])
 
 
 def _resample(df, rule):
     return df.resample(rule).agg({"Open": "first", "High": "max",
                                   "Low": "min", "Close": "last"}).dropna()
+
+
+# ---------------------------------------------------------------------------
+# IS THE NEWEST CANDLE FINISHED?
+# ---------------------------------------------------------------------------
+# yfinance hands back the still-forming candle as the last row, so this bot used
+# to drop that row unconditionally. That also threw away a candle that HAD just
+# finished: after Friday's close the last daily row IS Friday, so a signal there
+# only surfaced once Monday's row appeared -- a full trading day late, with price
+# already away from the entry. So work out when each candle actually stops
+# trading and keep it once that moment has passed.
+MARKET_TZ   = "America/New_York"
+SESSION_END = (16, 0)       # US cash close -- every ticker here is a US ETF
+SETTLE_MIN  = 15            # let Yahoo finish writing the closing print
+
+INTRADAY_SPAN = {"30m": "30min", "1h": "1h", "2h": "2h", "4h": "4h"}
+
+
+def _bar_end(ts, label):
+    """The moment the candle starting at `ts` stops trading (market time)."""
+    if label in ("1D", "1W"):
+        # Daily/weekly rows are tz-naive dates, and a weekly row is labelled with
+        # its MONDAY -- so that week finishes on the Friday. In a holiday-shortened
+        # week this waits until the Friday close: late by a day, never early.
+        day = pd.Timestamp(ts).normalize()
+        if label == "1W":
+            day += pd.Timedelta(days=4)
+        end = day + pd.Timedelta(hours=SESSION_END[0], minutes=SESSION_END[1])
+        return end.tz_localize(MARKET_TZ)
+
+    end = ts + pd.Timedelta(INTRADAY_SPAN[label])
+    # The last candle of a session is cut short by the close: a 1h candle opening
+    # at 15:30 is done at 16:00, not 16:30.
+    close = ts.normalize() + pd.Timedelta(hours=SESSION_END[0], minutes=SESSION_END[1])
+    return min(end, close)
+
+
+def _drop_unclosed(df, label, now=None):
+    """Trim the newest row only if it is still forming."""
+    if df.empty:
+        return df
+    ts = df.index[-1]
+    if label not in ("1D", "1W") and ts.tzinfo is None:
+        ts = ts.tz_localize(MARKET_TZ)      # defensive: intraday should be aware
+    now = now if now is not None else pd.Timestamp.now(tz=MARKET_TZ)
+    if now < _bar_end(ts, label) + pd.Timedelta(minutes=SETTLE_MIN):
+        return df.iloc[:-1]
+    return df
 
 
 def _load_seen():
@@ -199,7 +324,7 @@ def scan(do_print=False):
                 if isinstance(raw.columns, pd.MultiIndex):
                     raw.columns = raw.columns.get_level_values(0)
                 df = _resample(raw, fr["resample"]) if fr["resample"] else raw
-                df = df.iloc[:-1]              # judge the latest CLOSED candle only
+                df = _drop_unclosed(df, fr["label"])   # latest CLOSED candle only
                 if len(df) < 15:
                     continue
                 m = detect(df)
@@ -208,18 +333,30 @@ def scan(do_print=False):
                 key = f"{ticker}|{fr['label']}|{m['bar_time']}"
                 if key in seen:
                     continue
+                # "Drop size" alone reads as "the market is down this much now".
+                # It isn't -- it's the earlier fall that set the pattern up, and
+                # the signal itself is a break UPWARDS. Say so.
                 msg = (
                     "🟢 BUY SIGNAL — Sharp Drop → Higher Low → Peak Break\n"
                     f"{name}\n"
                     f"Timeframe: {fr['label']}\n"
                     f"Entry (peak broken): {m['entry']:.2f}\n"
-                    f"Drop size: {m['drop_pct']*100:.1f}%\n"
-                    f"Candle closed: {m['bar_time']}\n"
-                    "Real asset — buyable ETF share, NOT a CFD."
+                    f"Setup drop, already recovered: −{m['drop_pct']*100:.1f}% "
+                    f"({m['low1']:.2f} was the bottom)\n"
+                    f"Higher low since: {m['low2']:.2f}\n"
+                    f"Candle closed: {m['bar_time']}"
                 )
                 if do_print:
-                    print(msg + "\n")
-                send_telegram_alert(msg)
+                    _safe_print(msg + "\n")
+                chart_path = None
+                try:
+                    chart_path = save_chart(name, df, fr["label"], m)
+                except Exception as e:
+                    print(f"  {ticker} {fr['label']}: could not draw chart: {e}")
+                # Text fallback if the picture didn't go out. A recipient who did
+                # get the photo may see the text twice -- better than a lost signal.
+                if not chart_path or not send_telegram_photo(chart_path, msg):
+                    send_telegram_alert(msg)
                 _mark_seen(key)
                 seen.add(key)
             except Exception as e:
